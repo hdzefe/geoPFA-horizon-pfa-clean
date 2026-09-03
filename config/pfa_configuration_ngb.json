@@ -1,0 +1,251 @@
+{
+    "criteria": {
+        "economic": {
+            "weight": 0.3,
+            "description": "Surface demand & infrastructure constraints (constant across all horizons)",
+            "components": {
+                "demand": {
+                    "weight": 0.33,
+                    "pr0": 0.5,
+                    "description": "Heat demand drivers at surface",
+                    "layers": {
+                        "admin_areas_population": {
+                            "weight": 0.5,
+                            "units": "people/km²",
+                            "is_3d": "no",
+                            "data_col": "population",
+                            "x_col": "X",
+                            "y_col": "Y",
+                            "crs": "31932",
+                            "transformation_method": "none",
+                            "processing_method": "interpolate",
+                            "source": "VG250-EW (administrative boundaries & population)"
+                        },
+                        "geotis_heat_demand": {
+                            "weight": 0.5,
+                            "units": "MWh/year",
+                            "is_3d": "no",
+                            "data_col": "heat_demand",
+                            "x_col": "X",
+                            "y_col": "Y",
+                            "crs": "31932",
+                            "transformation_method": "none",
+                            "processing_method": "interpolate",
+                            "source": "GeoIS Heat Demand"
+                        }
+                    ]
+                },
+                "infrastructure": {
+                    "weight": 0.67,
+                    "pr0": 0.6,
+                    "description": "Existing infrastructure enabling heat utilization",
+                    "layers": {
+                        "district_heating_network": {
+                            "weight": 0.45,
+                            "units": "network_presence (binary/distance)",
+                            "is_3d": "no",
+                            "data_col": "dh_network",
+                            "x_col": "X",
+                            "y_col": "Y",
+                            "crs": "31932",
+                            "transformation_method": "inverse",
+                            "processing_method": "density",
+                            "source": "District Heating Network (existing infrastructure)",
+                            "note": "Proximity to DH networks reduces drilling/distribution costs"
+                        },
+                        "waste_heat_platform": {
+                            "weight": 0.27,
+                            "units": "platform_presence",
+                            "is_3d": "no",
+                            "data_col": "waste_heat",
+                            "x_col": "X",
+                            "y_col": "Y",
+                            "crs": "31932",
+                            "transformation_method": "none",
+                            "processing_method": "density",
+                            "source": "Waste Heat Platform (PfA)",
+                            "note": "Opportunity for heat cascade systems"
+                        },
+                        "solar_thermal_potential": {
+                            "weight": 0.28,
+                            "units": "kWh/m²/year",
+                            "is_3d": "no",
+                            "data_col": "solar_thermal",
+                            "x_col": "X",
+                            "y_col": "Y",
+                            "crs": "31932",
+                            "transformation_method": "none",
+                            "processing_method": "interpolate",
+                            "source": "Solar Thermal Potential (Hotmaps)",
+                            "note": "Hybrid system potential with geothermal"
+                        }
+                    ]
+                }
+            }
+        },
+        "geothermal_detfurth_fm": {
+            "weight": 0.0556,
+            "horizon_name": "Detfurth Formation",
+            "age_ma": 235,
+            "stratigraphic_unit": "Upper Triassic (Keuper)",
+            "age_period": "Triassic (oldest)",
+            "components": {
+                "thermal": {
+                    "weight": 0.4,
+                    "pr0": 0.4,
+                    "description": "Subsurface thermal favorability based on GeoIS temperatures and TUNB depth surfaces",
+                    "layers": {
+                        "subsurface_temperature_detfurth": {
+                            "weight": 0.7,
+                            "units": "°C",
+                            "is_3d": "yes",
+                            "data_col": "TEMP_DTFH",
+                            "x_col": "X",
+                            "y_col": "Y",
+                            "z_col": "Z_TOP_DTFH",
+                            "crs": "31932",
+                            "transformation_method": "none",
+                            "processing_method": "interpolate",
+                            "source": "GeoIS subsurface temperatures"
+                        },
+                        "thermal_thickness_factor_detfurth": {
+                            "weight": 0.3,
+                            "units": "meters (normalized)",
+                            "is_3d": "yes",
+                            "data_col": "THICK_THERMAL_DTFH",
+                            "x_col": "X",
+                            "y_col": "Y",
+                            "z_col": "Z_TOP_DTFH",
+                            "crs": "31932",
+                            "transformation_method": "none",
+                            "processing_method": "interpolate",
+                            "source": "TUNB depth surfaces (thickness depth-weighted synthetic layer)"
+                        }
+                    ]
+                },
+                "geologic": {
+                    "weight": 0.4,
+                    "pr0": 0.6,
+                    "description": "Subsurface reservoir quality and depositional environments",
+                    "layers": {
+                        "geothermal_potential_map_detfurth": {
+                            "weight": 0.6,
+                            "units": "categorical (high/medium/low)",
+                            "is_3d": "yes",
+                            "data_col": "GEO_POT_DTFH",
+                            "x_col": "X",
+                            "y_col": "Y",
+                            "z_col": "Z_TOP_DTFH",
+                            "crs": "31932",
+                            "transformation_method": "none",
+                            "processing_method": "interpolate",
+                            "source": "Subsurface reservoir maps (Detfurth Formation geothermal potential)"
+                        },
+                        "sandstone_quality_detfurth": {
+                            "weight": 0.4,
+                            "units": "quality_index",
+                            "is_3d": "yes",
+                            "data_col": "SAND_QUAL_DTFH",
+                            "x_col": "X",
+                            "y_col": "Y",
+                            "z_col": "Z_TOP_DTFH",
+                            "crs": "31932",
+                            "transformation_method": "none",
+                            "processing_method": "interpolate",
+                            "source": "Subsurface reservoir maps (Detfurth depositional facies)"
+                        }
+                    ]
+                },
+                "geothermal_evidence": {
+                    "weight": 0.2,
+                    "pr0": 0.5,
+                    "description": "Porosity-permeability data and operating geothermal plants (direct feasibility evidence)",
+                    "layers": {
+                        "porperm_detfurth": {
+                            "weight": 0.7,
+                            "units": "composite_porperm_index",
+                            "is_3d": "yes",
+                            "data_col": "PORPERM_DTFH",
+                            "x_col": "X",
+                            "y_col": "Y",
+                            "z_col": "Z_TOP_DTFH",
+                            "crs": "31932",
+                            "transformation_method": "log10",
+                            "processing_method": "interpolate",
+                            "source": "Borehole porosity-permeability data (Detfurth Formation)"
+                        },
+                        "deep_hydrothermal_sites_detfurth": {
+                            "weight": 0.3,
+                            "units": "distance_to_operating_plant_km",
+                            "is_3d": "yes",
+                            "data_col": "DIST_TO_OPERAT_DTFH",
+                            "x_col": "X",
+                            "y_col": "Y",
+                            "z_col": "Z_TOP_DTFH",
+                            "crs": "31932",
+                            "transformation_method": "inverse",
+                            "processing_method": "density",
+                            "source": "Operating geothermal plants (Detfurth Formation production evidence)"
+                        }
+                    ]
+                }
+            },
+            "penalty_layer": {
+                "name": "salt_structure_penalty_detfurth",
+                "weight": "veto",
+                "units": "distance_to_salt_km",
+                "is_3d": "yes",
+                "data_col": "DIST_TO_SALT_DTFH",
+                "x_col": "X",
+                "y_col": "Y",
+                "z_col": "Z_TOP_DTFH",
+                "crs": "31932",
+                "transformation_method": "inverse_penalty",
+                "processing_method": "interpolate",
+                "source": "Salt dome structures (North German Basin)",
+                "note": "Proximity to salt structures penalties favorability; corrosive brines, structural complications"
+            }
+        }
+    },
+    "metadata": {
+        "project": "North German Basin Hydrothermal Favorability Assessment",
+        "application": "District Heating Site Selection",
+        "basin": "North German Basin",
+        "dimensions": "2D (surface constraints) and 3D (subsurface reservoirs)",
+        "horizons": 18,
+        "horizon_sequence": [
+            "detfurth_fm (Triassic, oldest)",
+            "lower_schilfsandstein",
+            "upper_schilfsandstein",
+            "lower_exter_fm_1",
+            "lower_exter_fm_2",
+            "upper_exter_fm",
+            "hettangian_1",
+            "hettangian_2",
+            "sinemurian_1",
+            "sinemurian_2",
+            "pliensbachian_1",
+            "pliensbachian_2",
+            "toarcian_1",
+            "toarcian_2",
+            "aalenian",
+            "bajocian",
+            "valanginian",
+            "bueckeberg_group (Lower Cretaceous, youngest)"
+        ],
+        "age_span": "Triassic to Lower Cretaceous (235 Ma to 125 Ma)",
+        "economic_weight": 0.3,
+        "economic_demand_weight": 0.33,
+        "economic_infrastructure_weight": 0.67,
+        "geothermal_weight": 0.7,
+        "weight_per_horizon": 0.0556,
+        "salt_penalty": "Applied to all horizons via inverse distance (closer to salt = lower favorability)",
+        "normalization_method": "minmax",
+        "norm_to": 5,
+        "output_range_raw": "[0, 1] (from voter logistic sigmoid)",
+        "output_range_normalized": "[0, 5] (min-max rescaled for stakeholder communication)",
+        "component_veto": false,
+        "criteria_veto": true,
+        "nan_mode": "propagate_shared"
+    }
+}
