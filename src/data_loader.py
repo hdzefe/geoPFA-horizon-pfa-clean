@@ -112,7 +112,7 @@ class ReservoirDataLoader:
         
         return None
     
-    def load_and_rasterize_shapefile(self, shapefile_path, column_name, value_mapping=None, normalize=True):
+    def load_and_rasterize_shapefile(self, shapefile_path, column_name, value_mapping=None, filter_config=None, normalize=True):
         """
         Load shapefile, convert categorical values, and rasterize to grid
         
@@ -120,6 +120,7 @@ class ReservoirDataLoader:
             shapefile_path: Path to shapefile
             column_name: Column to rasterize
             value_mapping: Dict mapping categorical values to numeric scores
+            filter_config: Dict with 'column' and 'values' for filtering features
             normalize: Whether to normalize values to [0, 1]
         
         Returns:
@@ -142,6 +143,19 @@ class ReservoirDataLoader:
                 gdf.set_crs(self.crs, inplace=True)
             elif str(gdf.crs) != self.crs:
                 gdf = gdf.to_crs(self.crs)
+            
+            # Apply filtering if specified
+            if filter_config is not None:
+                filter_column = filter_config.get('column')
+                filter_values = filter_config.get('values', [])
+                
+                if filter_column and filter_values:
+                    before_filter = len(gdf)
+                    gdf = gdf[gdf[filter_column].isin(filter_values)]
+                    after_filter = len(gdf)
+                    
+                    logger.info(f"  Applied filter: {filter_column} in {filter_values}")
+                    logger.info(f"  Filtered: {before_filter} → {after_filter} features")
             
             # Convert categorical values to numeric if mapping provided
             if value_mapping is not None:
@@ -226,26 +240,24 @@ class ReservoirDataLoader:
         path = reservoir_config['path']
         column = reservoir_config['potential_column']
         value_mapping = reservoir_config['potential_values']
+        value_scale = reservoir_config.get('value_scale', {
+            'low': 0.2,
+            'medium': 0.5,
+            'high': 1.0
+        })
         
         logger.info(f"\n{'='*80}")
         logger.info(f"Processing: {name} (geothermal potential)")
         logger.info(f"{'='*80}")
         
         try:
-            # Map from config: original_value -> normalized_label
-            # Then map normalized labels to numeric values
-            numeric_scale = {
-                'low': 0.0,
-                'medium': 0.5,
-                'high': 1.0
-            }
-            
             # Build final mapping: original_value -> numeric_value
             final_mapping = {}
             for orig_val, norm_label in value_mapping.items():
-                final_mapping[orig_val] = numeric_scale.get(norm_label, 0.0)
+                final_mapping[orig_val] = value_scale.get(norm_label, 0.0)
             
             logger.info(f"  Config mapping: {value_mapping}")
+            logger.info(f"  Value scale: {value_scale}")
             logger.info(f"  Final numeric mapping: {final_mapping}")
             
             # Load and rasterize with numeric mapping
@@ -253,6 +265,7 @@ class ReservoirDataLoader:
                 path, 
                 column, 
                 value_mapping=final_mapping,
+                filter_config=None,
                 normalize=False
             )
             
@@ -278,6 +291,7 @@ class ReservoirDataLoader:
         name = reservoir_config['name']
         path = reservoir_config['path']
         column = reservoir_config['sandstone_column']
+        filter_config = reservoir_config.get('sandstone_filter')
         
         logger.info(f"\n{'='*80}")
         logger.info(f"Processing: {name} (sandstone presence)")
@@ -289,6 +303,7 @@ class ReservoirDataLoader:
                 path, 
                 column, 
                 value_mapping=None,
+                filter_config=filter_config,
                 normalize=False
             )
             
@@ -328,6 +343,7 @@ class ReservoirDataLoader:
                 path, 
                 column, 
                 value_mapping=None,
+                filter_config=None,
                 normalize=False
             )
             
