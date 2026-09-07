@@ -15,7 +15,7 @@
     {
       "name": "aalenian",
       "layer_name": "aalenian",
-      "path": "reservoirs/aalenian/aat1-Potential.shp",
+      "path": "reservoirs/aalenian/aal1-Potential.shp",
       "type": "geothermal_potential",
       "potential_column": "Potential",
       "potential_values": {
@@ -63,7 +63,7 @@
     {
       "name": "upper_schilfsandstein",
       "layer_name": "upper_schilfsandstein",
-      "path": "reservoirs/upper_schilfsandstein/usf2-Potential.shp",
+      "path": "reservoirs/upper_schilfsandstein/tsf2-Potential.shp",
       "type": "geothermal_potential",
       "potential_column": "Potential",
       "potential_values": {
@@ -80,8 +80,8 @@
       "potential_column": "Potential",
       "potential_values": {
         "niedrig": "low",
-        "eingeschraenkt": "medium",
-        "eingeschränkt": "medium",
+        "eingeschraenkt": "low",
+        "eingeschränkt": "low",
         "mittel": "medium",
         "hoch": "high"
       }
@@ -94,8 +94,8 @@
       "potential_column": "Potential",
       "potential_values": {
         "niedrig": "low",
-        "eingeschraenkt": "medium",
-        "eingeschränkt": "medium",
+        "eingeschraenkt": "low",
+        "eingeschränkt": "low",
         "mittel": "medium",
         "hoch": "high"
       }
@@ -153,7 +153,7 @@
       "layer_name": "sinemurian_2",
       "path": "reservoirs/sinemurian/Sin2_Potential.shp",
       "type": "geothermal_potential",
-      "potential_column": "reservoir",
+      "potential_column": "reservoirq",
       "potential_values": {
         "low (< 10 m)": "low",
         "moderate (10-20 m)": "medium",
@@ -199,7 +199,7 @@
     {
       "name": "valanginian",
       "layer_name": "valanginian",
-      "path": "reservoirs/valanginian/lower_cretaceous_lbeg_valangin.shp",
+      "path": "reservoirs/valanginian/valangin.shp",
       "type": "sandstone_presence",
       "sandstone_column": "OBJECTID",
       "sandstone_values": ["1", "2", "3"],
@@ -208,7 +208,7 @@
     {
       "name": "bueckeberg_group",
       "layer_name": "bueckeberg_group",
-      "path": "reservoirs/bueckeberg_group/lower_cretaceous_lbeg_bueckeberg.shp",
+      "path": "reservoirs/bueckeberg_group/bueckeberg.shp",
       "type": "sandstone_presence",
       "sandstone_column": "LEGNR",
       "sandstone_values": ["1", "2", "3", "7"],
@@ -217,7 +217,7 @@
     {
       "name": "detfurth_fm",
       "layer_name": "detfurth_fm",
-      "path": "reservoirs/detfurth_fm/sand_zones_detfurth.shp",
+      "path": "reservoirs/detfurth_fm/sand_zones_detfurth_.shp",
       "type": "sandstone_share",
       "sandstone_column": "sand_share",
       "sandstone_values": ["30", "40", "50", "60", "70", "80", "90"],
