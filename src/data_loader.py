@@ -232,22 +232,18 @@ class ReservoirDataLoader:
         logger.info(f"{'='*80}")
         
         try:
-            # Map categorical values to numeric
-            numeric_mapping = {
-                'niedrig': 0.0,
-                'mittel': 0.5,
-                'hoch': 1.0,
-                'eingeschraenkt': 0.0,
-                'eingeschränkt': 0.0,
-                'low (< 10 m)': 0.0,
-                'moderate (10-20 m)': 0.5,
-                'high (> 20 m)': 1.0
+            # Map from config: original_value -> normalized_label
+            # Then map normalized labels to numeric values
+            numeric_scale = {
+                'low': 0.0,
+                'medium': 0.5,
+                'high': 1.0
             }
             
-            # Build mapping from config values
+            # Build final mapping: original_value -> numeric_value
             final_mapping = {}
             for orig_val, norm_label in value_mapping.items():
-                final_mapping[orig_val] = numeric_mapping.get(norm_label, 0.0)
+                final_mapping[orig_val] = numeric_scale.get(norm_label, 0.0)
             
             logger.info(f"  Config mapping: {value_mapping}")
             logger.info(f"  Final numeric mapping: {final_mapping}")
@@ -498,7 +494,7 @@ class ReservoirDataLoader:
         
         if len(results) > 0:
             for name, data in sorted(results.items()):
-                logger.info(f"  {name}: {data['type']}, range [{data['range'][0]:.3f}, {data['range'][1]:.3f}]")
+                logger.info(f"  {name}: {data['type']}, range [{data['range'][0]:.3f}, {data['range'][1]:.3f}], cells: {data['valid_cells']}")
         else:
             logger.warning("⚠ No layers processed successfully!")
         
