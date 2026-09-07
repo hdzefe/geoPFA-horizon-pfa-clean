@@ -85,10 +85,6 @@ class ReservoirDataLoader:
         
         bounds = (left, bottom, right, top)
         
-        logger.info(f"✓ Created raster transform")
-        logger.info(f"  Bounds: {bounds}")
-        logger.info(f"  Cell size: {(right-left)/width:.2f}m x {(top-bottom)/height:.2f}m")
-        
         return transform, bounds
     
     def find_shapefile(self, base_path):
@@ -138,6 +134,9 @@ class ReservoirDataLoader:
             # Load shapefile
             gdf = gpd.read_file(actual_path)
             
+            logger.info(f"  Loaded {actual_path.name}: {len(gdf)} features")
+            logger.info(f"  Column '{column_name}' unique values: {gdf[column_name].unique()[:10]}")
+            
             # Ensure correct CRS
             if gdf.crs is None:
                 gdf.set_crs(self.crs, inplace=True)
@@ -146,13 +145,20 @@ class ReservoirDataLoader:
             
             # Convert categorical values to numeric if mapping provided
             if value_mapping is not None:
+                logger.info(f"  Applying value mapping: {value_mapping}")
+                
                 numeric_column = f"{column_name}_numeric"
                 gdf[numeric_column] = gdf[column_name].map(value_mapping)
                 
                 # Check for unmapped values
                 unmapped = gdf[numeric_column].isna().sum()
+                mapped = gdf[numeric_column].notna().sum()
+                
+                logger.info(f"  Mapped: {mapped}, Unmapped: {unmapped}")
+                
                 if unmapped > 0:
-                    logger.warning(f"  ⚠ {unmapped} rows with unmapped values in {column_name}")
+                    logger.warning(f"  ⚠ {unmapped} rows with unmapped values")
+                    logger.warning(f"    Unmapped values: {gdf[gdf[numeric_column].isna()][column_name].unique()}")
                     gdf[numeric_column] = gdf[numeric_column].fillna(0)
                 
                 column_name = numeric_column
@@ -163,6 +169,9 @@ class ReservoirDataLoader:
             
             # Create raster by burning geometry
             raster = np.zeros((height, width), dtype=np.float32)
+            
+            # Count features with non-zero values
+            non_zero_features = 0
             
             # Rasterize each feature
             for idx, row in gdf.iterrows():
@@ -175,6 +184,8 @@ class ReservoirDataLoader:
                 # Skip zero values (no data)
                 if value == 0:
                     continue
+                
+                non_zero_features += 1
                 
                 try:
                     # Rasterize this geometry
@@ -192,8 +203,8 @@ class ReservoirDataLoader:
                     continue
             
             logger.info(f"✓ Rasterized {actual_path.name}")
-            logger.info(f"  Column: {column_name}")
-            logger.info(f"  Value range: [{raster.min():.3f}, {raster.max():.3f}]")
+            logger.info(f"  Non-zero features: {non_zero_features}/{len(gdf)}")
+            logger.info(f"  Raster value range: [{raster.min():.3f}, {raster.max():.3f}]")
             
             return raster
         
@@ -238,6 +249,9 @@ class ReservoirDataLoader:
             for orig_val, norm_label in value_mapping.items():
                 final_mapping[orig_val] = numeric_mapping.get(norm_label, 0.0)
             
+            logger.info(f"  Config mapping: {value_mapping}")
+            logger.info(f"  Final numeric mapping: {final_mapping}")
+            
             # Load and rasterize with numeric mapping
             raster = self.load_and_rasterize_shapefile(
                 path, 
@@ -246,7 +260,7 @@ class ReservoirDataLoader:
                 normalize=False
             )
             
-            logger.info(f"  Numeric range: [{raster.min():.3f}, {raster.max():.3f}]")
+            logger.info(f"  Final range: [{raster.min():.3f}, {raster.max():.3f}]")
             logger.info(f"  Non-zero cells: {np.count_nonzero(raster)}/{raster.size}")
             
             return raster
