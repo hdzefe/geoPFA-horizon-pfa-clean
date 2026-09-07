@@ -7,7 +7,9 @@
     "right": 3921378.660,
     "bottom": 5650523.765,
     "top": 6103144.134,
-    "unit": "meters"
+    "unit": "meters",
+    "boundary_shapefile": "extent/north_german_basin_.shp",
+    "description": "Study area boundary - North German Basin"
   },
   "reservoirs": [
     {
