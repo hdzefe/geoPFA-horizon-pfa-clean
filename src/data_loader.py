@@ -7,8 +7,9 @@ import json
 import logging
 import numpy as np
 import geopandas as gpd
+import pandas as pd
 import rasterio
-from rasterio.features import geometry_mask, rasterize
+from rasterio.features import rasterize
 from rasterio.transform import from_bounds
 from pathlib import Path
 import warnings
@@ -90,27 +91,71 @@ class ReservoirDataLoader:
         
         return transform, bounds
     
-    def load_and_rasterize_shapefile(self, shapefile_path, column_name, normalize=True):
+    def find_shapefile(self, base_path):
         """
-        Load shapefile and rasterize to grid
+        Find shapefile by searching for .shp files in directory
+        
+        Args:
+            base_path: Path pattern from config
+        
+        Returns:
+            Actual path to .shp file or None
+        """
+        # Try exact path first
+        full_path = self.base_dir / base_path
+        if full_path.exists():
+            return full_path
+        
+        # Try finding any .shp in the directory
+        parent_dir = self.base_dir / Path(base_path).parent
+        if parent_dir.exists():
+            shp_files = list(parent_dir.glob("*.shp"))
+            if shp_files:
+                logger.warning(f"  Using found shapefile: {shp_files[0].name}")
+                return shp_files[0]
+        
+        return None
+    
+    def load_and_rasterize_shapefile(self, shapefile_path, column_name, value_mapping=None, normalize=True):
+        """
+        Load shapefile, convert categorical values, and rasterize to grid
         
         Args:
             shapefile_path: Path to shapefile
             column_name: Column to rasterize
+            value_mapping: Dict mapping categorical values to numeric scores
             normalize: Whether to normalize values to [0, 1]
         
         Returns:
             2D numpy array
         """
         try:
+            # Find actual shapefile
+            actual_path = self.find_shapefile(str(shapefile_path))
+            if actual_path is None:
+                raise FileNotFoundError(f"Shapefile not found: {shapefile_path}")
+            
             # Load shapefile
-            gdf = gpd.read_file(self.base_dir / shapefile_path)
+            gdf = gpd.read_file(actual_path)
             
             # Ensure correct CRS
             if gdf.crs is None:
                 gdf.set_crs(self.crs, inplace=True)
             elif str(gdf.crs) != self.crs:
                 gdf = gdf.to_crs(self.crs)
+            
+            # Convert categorical values to numeric if mapping provided
+            if value_mapping is not None:
+                numeric_column = f"{column_name}_numeric"
+                gdf[numeric_column] = gdf[column_name].map(value_mapping)
+                
+                # Check for unmapped values
+                unmapped = gdf[numeric_column].isna().sum()
+                if unmapped > 0:
+                    logger.warning(f"  ⚠ {unmapped} rows with unmapped values in {column_name}")
+                    gdf[numeric_column] = gdf[numeric_column].fillna(0)
+                
+                column_name = numeric_column
             
             # Get transform and bounds
             transform, bounds = self.create_transform_and_bounds()
@@ -127,18 +172,26 @@ class ReservoirDataLoader:
                 geometry = row.geometry
                 value = float(row[column_name])
                 
-                # Rasterize this geometry
-                burned = rasterize(
-                    [(geometry, value)],
-                    out_shape=(height, width),
-                    transform=transform,
-                    default_value=0,
-                    dtype=np.float32
-                )
+                # Skip zero values (no data)
+                if value == 0:
+                    continue
                 
-                raster = np.maximum(raster, burned)
+                try:
+                    # Rasterize this geometry
+                    burned = rasterize(
+                        [(geometry, value)],
+                        out_shape=(height, width),
+                        transform=transform,
+                        default_value=0,
+                        dtype=np.float32
+                    )
+                    
+                    raster = np.maximum(raster, burned)
+                except Exception as e:
+                    logger.warning(f"  ⚠ Could not rasterize feature {idx}: {e}")
+                    continue
             
-            logger.info(f"✓ Rasterized {shapefile_path}")
+            logger.info(f"✓ Rasterized {actual_path.name}")
             logger.info(f"  Column: {column_name}")
             logger.info(f"  Value range: [{raster.min():.3f}, {raster.max():.3f}]")
             
@@ -148,33 +201,6 @@ class ReservoirDataLoader:
             logger.error(f"✗ Failed to rasterize {shapefile_path}: {e}")
             raise
     
-    def normalize_potential_values(self, raster, value_mapping):
-        """
-        Normalize geothermal potential values to [0, 1]
-        
-        Args:
-            raster: Input raster with categorical values
-            value_mapping: Dict mapping original values to normalized values
-        
-        Returns:
-            Normalized raster
-        """
-        normalized = np.zeros_like(raster)
-        
-        # Map categorical values to numeric scale
-        value_scale = {
-            'low': 0.0,
-            'medium': 0.5,
-            'high': 1.0
-        }
-        
-        # Apply mapping
-        for orig_val, norm_label in value_mapping.items():
-            mask = raster == float(orig_val)
-            normalized[mask] = value_scale[norm_label]
-        
-        return normalized
-    
     def process_geothermal_potential_layer(self, reservoir_config):
         """
         Process geothermal potential layer
@@ -183,7 +209,7 @@ class ReservoirDataLoader:
             reservoir_config: Configuration dict for reservoir
         
         Returns:
-            Normalized raster [0, 1]
+            Normalized raster [0, 1] or None if failed
         """
         name = reservoir_config['name']
         path = reservoir_config['path']
@@ -195,16 +221,35 @@ class ReservoirDataLoader:
         logger.info(f"{'='*80}")
         
         try:
-            # Load and rasterize
-            raster = self.load_and_rasterize_shapefile(path, column, normalize=False)
+            # Map categorical values to numeric
+            numeric_mapping = {
+                'niedrig': 0.0,
+                'mittel': 0.5,
+                'hoch': 1.0,
+                'eingeschraenkt': 0.0,
+                'eingeschränkt': 0.0,
+                'low (< 10 m)': 0.0,
+                'moderate (10-20 m)': 0.5,
+                'high (> 20 m)': 1.0
+            }
             
-            # Normalize categorical values
-            normalized = self.normalize_potential_values(raster, value_mapping)
+            # Build mapping from config values
+            final_mapping = {}
+            for orig_val, norm_label in value_mapping.items():
+                final_mapping[orig_val] = numeric_mapping.get(norm_label, 0.0)
             
-            logger.info(f"  Normalized range: [{normalized.min():.3f}, {normalized.max():.3f}]")
-            logger.info(f"  Non-zero cells: {np.count_nonzero(normalized)}/{normalized.size}")
+            # Load and rasterize with numeric mapping
+            raster = self.load_and_rasterize_shapefile(
+                path, 
+                column, 
+                value_mapping=final_mapping,
+                normalize=False
+            )
             
-            return normalized
+            logger.info(f"  Numeric range: [{raster.min():.3f}, {raster.max():.3f}]")
+            logger.info(f"  Non-zero cells: {np.count_nonzero(raster)}/{raster.size}")
+            
+            return raster
         
         except Exception as e:
             logger.error(f"✗ Failed to process {name}: {e}")
@@ -218,7 +263,7 @@ class ReservoirDataLoader:
             reservoir_config: Configuration dict for reservoir
         
         Returns:
-            Binary raster [0, 1]
+            Binary raster [0, 1] or None if failed
         """
         name = reservoir_config['name']
         path = reservoir_config['path']
@@ -229,8 +274,13 @@ class ReservoirDataLoader:
         logger.info(f"{'='*80}")
         
         try:
-            # Load and rasterize
-            raster = self.load_and_rasterize_shapefile(path, column, normalize=False)
+            # Load and rasterize (numeric column, no mapping needed)
+            raster = self.load_and_rasterize_shapefile(
+                path, 
+                column, 
+                value_mapping=None,
+                normalize=False
+            )
             
             # Convert to binary (any non-zero value = 1)
             binary = np.where(raster > 0, 1.0, 0.0).astype(np.float32)
@@ -252,7 +302,7 @@ class ReservoirDataLoader:
             reservoir_config: Configuration dict for reservoir
         
         Returns:
-            Normalized raster [0, 1]
+            Normalized raster [0, 1] or None if failed
         """
         name = reservoir_config['name']
         path = reservoir_config['path']
@@ -263,8 +313,13 @@ class ReservoirDataLoader:
         logger.info(f"{'='*80}")
         
         try:
-            # Load and rasterize
-            raster = self.load_and_rasterize_shapefile(path, column, normalize=False)
+            # Load and rasterize (numeric column)
+            raster = self.load_and_rasterize_shapefile(
+                path, 
+                column, 
+                value_mapping=None,
+                normalize=False
+            )
             
             # Normalize from percentage (0-100) to [0, 1]
             normalized = np.clip(raster / 100.0, 0, 1).astype(np.float32)
@@ -280,7 +335,7 @@ class ReservoirDataLoader:
     
     def clip_to_extent(self, raster, extent_gdf):
         """
-        Clip raster to extent boundary
+        Clip raster to extent boundary using mask
         
         Args:
             raster: Input raster
@@ -289,51 +344,65 @@ class ReservoirDataLoader:
         Returns:
             Clipped raster
         """
+        from rasterio.features import geometry_mask
+        
         transform, bounds = self.create_transform_and_bounds()
         width, height = self.grid_size
         
-        # Create mask from extent geometry
-        mask = geometry_mask(
-            extent_gdf.geometry,
-            out_shape=(height, width),
-            transform=transform,
-            invert=True  # True where inside extent
-        )
-        
-        # Apply mask
-        clipped = raster.copy()
-        clipped[~mask] = 0
-        
-        return clipped
+        try:
+            # Create mask from extent geometry
+            mask = geometry_mask(
+                extent_gdf.geometry,
+                out_shape=(height, width),
+                transform=transform,
+                invert=True  # True where inside extent
+            )
+            
+            # Apply mask
+            clipped = raster.copy()
+            clipped[~mask] = 0
+            
+            return clipped
+        except Exception as e:
+            logger.warning(f"  ⚠ Could not clip to extent: {e}")
+            return raster
     
     def save_raster(self, raster, name, dtype=np.float32):
         """Save raster to GeoTIFF"""
         transform, _ = self.create_transform_and_bounds()
         output_path = self.output_dir / f"{name}.tif"
         
-        with rasterio.open(
-            output_path,
-            'w',
-            driver='GTiff',
-            height=self.grid_size[1],
-            width=self.grid_size[0],
-            count=1,
-            dtype=dtype,
-            crs=self.crs,
-            transform=transform,
-            compress='lzw'
-        ) as dst:
-            dst.write(raster, 1)
-        
-        logger.info(f"✓ Saved: {output_path}")
-        return output_path
+        try:
+            with rasterio.open(
+                output_path,
+                'w',
+                driver='GTiff',
+                height=self.grid_size[1],
+                width=self.grid_size[0],
+                count=1,
+                dtype=dtype,
+                crs=self.crs,
+                transform=transform,
+                compress='lzw'
+            ) as dst:
+                dst.write(raster, 1)
+            
+            logger.info(f"✓ Saved: {output_path}")
+            return output_path
+        except Exception as e:
+            logger.error(f"✗ Failed to save {output_path}: {e}")
+            return None
     
     def save_raster_as_npy(self, raster, name):
         """Save raster as numpy array"""
         output_path = self.output_dir / f"{name}.npy"
-        np.save(output_path, raster)
-        logger.info(f"✓ Saved: {output_path}")
-        return output_path
+        try:
+            np.save(output_path, raster)
+            logger.info(f"✓ Saved: {output_path}")
+            return output_path
+        except Exception as e:
+            logger.error(f"✗ Failed to save {output_path}: {e}")
+            return None
     
     def process_all_reservoirs(self, clip_to_boundary=True):
         """
@@ -354,7 +423,11 @@ class ReservoirDataLoader:
         # Load extent boundary if clipping
         extent_gdf = None
         if clip_to_boundary:
-            extent_gdf = self.load_extent_boundary()
+            try:
+                extent_gdf = self.load_extent_boundary()
+            except Exception as e:
+                logger.warning(f"⚠ Could not load extent boundary: {e}")
+                logger.warning(f"  Proceeding without clipping")
         
         # Process each reservoir
         for reservoir_config in self.config['reservoirs']:
@@ -379,22 +452,23 @@ class ReservoirDataLoader:
                     logger.warning(f"⚠ Skipping {name} - processing failed")
                     continue
                 
-                # Clip to extent if requested
+                # Clip to extent if requested and available
                 if clip_to_boundary and extent_gdf is not None:
                     raster = self.clip_to_extent(raster, extent_gdf)
                     logger.info(f"  Clipped to basin extent")
                 
                 # Save outputs
-                self.save_raster(raster, name, dtype=np.float32)
-                self.save_raster_as_npy(raster, name)
+                tif_path = self.save_raster(raster, name, dtype=np.float32)
+                npy_path = self.save_raster_as_npy(raster, name)
                 
-                results[name] = {
-                    'array': raster,
-                    'type': layer_type,
-                    'shape': raster.shape,
-                    'range': (raster.min(), raster.max()),
-                    'valid_cells': np.count_nonzero(raster)
-                }
+                if tif_path and npy_path:
+                    results[name] = {
+                        'array': raster,
+                        'type': layer_type,
+                        'shape': raster.shape,
+                        'range': (raster.min(), raster.max()),
+                        'valid_cells': np.count_nonzero(raster)
+                    }
                 
                 logger.info(f"✓ {name} completed\n")
             
@@ -408,14 +482,13 @@ class ReservoirDataLoader:
         logger.info("="*80)
         logger.info(f"Successfully processed: {len(results)}/{len(self.config['reservoirs'])} layers")
         
-        for name, data in results.items():
-            logger.info(f"  {name}: {data['type']}, range [{data['range'][0]:.3f}, {data['range'][1]:.3f}]")
+        if len(results) > 0:
+            for name, data in sorted(results.items()):
+                logger.info(f"  {name}: {data['type']}, range [{data['range'][0]:.3f}, {data['range'][1]:.3f}]")
+        else:
+            logger.warning("⚠ No layers processed successfully!")
         
         return results
-
-
-# Import pandas here to avoid errors
-import pandas as pd
 
 
 def main():
