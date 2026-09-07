@@ -1,0 +1,225 @@
+{
+  "project": "North German Basin - Geothermal Favorability Assessment",
+  "crs": "EPSG:31467",
+  "grid_size": [2000, 2000],
+  "extent": {
+    "left": 3342763.109,
+    "right": 3921378.660,
+    "bottom": 5650523.765,
+    "top": 6103144.134,
+    "unit": "meters"
+  },
+  "reservoirs": [
+    {
+      "name": "aalenian",
+      "layer_name": "aalenian",
+      "path": "reservoirs/aalenian/aat1-Potential.shp",
+      "type": "geothermal_potential",
+      "potential_column": "Potential",
+      "potential_values": {
+        "niedrig": "low",
+        "mittel": "medium",
+        "hoch": "high"
+      }
+    },
+    {
+      "name": "bajocian",
+      "layer_name": "bajocian",
+      "path": "reservoirs/bajocian/bj1-Potential.shp",
+      "type": "geothermal_potential",
+      "potential_column": "Potential",
+      "potential_values": {
+        "niedrig": "low",
+        "mittel": "medium",
+        "hoch": "high"
+      }
+    },
+    {
+      "name": "hettangian_1",
+      "layer_name": "hettangian_1",
+      "path": "reservoirs/hettangian/Het1_Potential.shp",
+      "type": "geothermal_potential",
+      "potential_column": "quality",
+      "potential_values": {
+        "low (< 10 m)": "low",
+        "moderate (10-20 m)": "medium",
+        "high (> 20 m)": "high"
+      }
+    },
+    {
+      "name": "hettangian_2",
+      "layer_name": "hettangian_2",
+      "path": "reservoirs/hettangian/Het2_Potential.shp",
+      "type": "geothermal_potential",
+      "potential_column": "quality",
+      "potential_values": {
+        "low (< 10 m)": "low",
+        "moderate (10-20 m)": "medium",
+        "high (> 20 m)": "high"
+      }
+    },
+    {
+      "name": "upper_schilfsandstein",
+      "layer_name": "upper_schilfsandstein",
+      "path": "reservoirs/upper_schilfsandstein/usf2-Potential.shp",
+      "type": "geothermal_potential",
+      "potential_column": "Potential",
+      "potential_values": {
+        "niedrig": "low",
+        "mittel": "medium",
+        "hoch": "high"
+      }
+    },
+    {
+      "name": "lower_exter_fm_1",
+      "layer_name": "lower_exter_fm_1",
+      "path": "reservoirs/lower_exter_fm_1/k4-2-Potential.shp",
+      "type": "geothermal_potential",
+      "potential_column": "Potential",
+      "potential_values": {
+        "niedrig": "low",
+        "eingeschraenkt": "medium",
+        "eingeschränkt": "medium",
+        "mittel": "medium",
+        "hoch": "high"
+      }
+    },
+    {
+      "name": "lower_exter_fm_2",
+      "layer_name": "lower_exter_fm_2",
+      "path": "reservoirs/lower_exter_fm_2/k4-3-Potential.shp",
+      "type": "geothermal_potential",
+      "potential_column": "Potential",
+      "potential_values": {
+        "niedrig": "low",
+        "eingeschraenkt": "medium",
+        "eingeschränkt": "medium",
+        "mittel": "medium",
+        "hoch": "high"
+      }
+    },
+    {
+      "name": "upper_exter_fm",
+      "layer_name": "upper_exter_fm",
+      "path": "reservoirs/upper_exter_fm/k4-4-Potential.shp",
+      "type": "geothermal_potential",
+      "potential_column": "Potential",
+      "potential_values": {
+        "niedrig": "low",
+        "mittel": "medium",
+        "hoch": "high"
+      }
+    },
+    {
+      "name": "pliensbachian_1",
+      "layer_name": "pliensbachian_1",
+      "path": "reservoirs/pliensbachian/Pli1_Potential.shp",
+      "type": "geothermal_potential",
+      "potential_column": "reservoirq",
+      "potential_values": {
+        "low (< 10 m)": "low",
+        "moderate (10-20 m)": "medium",
+        "high (> 20 m)": "high"
+      }
+    },
+    {
+      "name": "pliensbachian_2",
+      "layer_name": "pliensbachian_2",
+      "path": "reservoirs/pliensbachian/Pli2_Potential.shp",
+      "type": "geothermal_potential",
+      "potential_column": "reservoir",
+      "potential_values": {
+        "low (< 10 m)": "low",
+        "moderate (10-20 m)": "medium",
+        "high (> 20 m)": "high"
+      }
+    },
+    {
+      "name": "sinemurian_1",
+      "layer_name": "sinemurian_1",
+      "path": "reservoirs/sinemurian/Sin1_Potential.shp",
+      "type": "geothermal_potential",
+      "potential_column": "reservoirq",
+      "potential_values": {
+        "low (< 10 m)": "low",
+        "moderate (10-20 m)": "medium",
+        "high (> 20 m)": "high"
+      }
+    },
+    {
+      "name": "sinemurian_2",
+      "layer_name": "sinemurian_2",
+      "path": "reservoirs/sinemurian/Sin2_Potential.shp",
+      "type": "geothermal_potential",
+      "potential_column": "reservoir",
+      "potential_values": {
+        "low (< 10 m)": "low",
+        "moderate (10-20 m)": "medium",
+        "high (> 20 m)": "high"
+      }
+    },
+    {
+      "name": "toarcian_1",
+      "layer_name": "toarcian_1",
+      "path": "reservoirs/toarcian/toa1-Potential.shp",
+      "type": "geothermal_potential",
+      "potential_column": "Potential",
+      "potential_values": {
+        "niedrig": "low",
+        "mittel": "medium",
+        "hoch": "high"
+      }
+    },
+    {
+      "name": "toarcian_2",
+      "layer_name": "toarcian_2",
+      "path": "reservoirs/toarcian/toa2-Potential.shp",
+      "type": "geothermal_potential",
+      "potential_column": "Potential",
+      "potential_values": {
+        "niedrig": "low",
+        "mittel": "medium",
+        "hoch": "high"
+      }
+    },
+    {
+      "name": "lower_schilfsandstein",
+      "layer_name": "lower_schilfsandstein",
+      "path": "reservoirs/lower_schilfsandstein/tsf1-Potential.shp",
+      "type": "geothermal_potential",
+      "potential_column": "Potential",
+      "potential_values": {
+        "niedrig": "low",
+        "mittel": "medium",
+        "hoch": "high"
+      }
+    },
+    {
+      "name": "valanginian",
+      "layer_name": "valanginian",
+      "path": "reservoirs/valanginian/lower_cretaceous_lbeg_valangin.shp",
+      "type": "sandstone_presence",
+      "sandstone_column": "OBJECTID",
+      "sandstone_values": ["1", "2", "3"],
+      "description": "Mapped sandstone units in Lower Saxony"
+    },
+    {
+      "name": "bueckeberg_group",
+      "layer_name": "bueckeberg_group",
+      "path": "reservoirs/bueckeberg_group/lower_cretaceous_lbeg_bueckeberg.shp",
+      "type": "sandstone_presence",
+      "sandstone_column": "LEGNR",
+      "sandstone_values": ["1", "2", "3", "7"],
+      "description": "Mapped sandstone units in Lower Saxony"
+    },
+    {
+      "name": "detfurth_fm",
+      "layer_name": "detfurth_fm",
+      "path": "reservoirs/detfurth_fm/sand_zones_detfurth.shp",
+      "type": "sandstone_share",
+      "sandstone_column": "sand_share",
+      "sandstone_values": ["30", "40", "50", "60", "70", "80", "90"],
+      "description": "Sand share percentage in Detfurth Formation"
+    }
+  ]
+}
