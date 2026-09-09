@@ -14,12 +14,6 @@ Tier 1 Horizons (with borehole data):
 - hettangian_1, hettangian_2
 - pliensbachian_1, pliensbachian_2
 - sinemurian_1, sinemurian_2
-
-Tier 2 Horizons (without borehole depth/thickness data):
-- aalenian, bajocian, toarcian_1/2
-- upper/lower_schilfsandstein
-- upper/lower_exter_fm_1/2
-- valanginian, bueckeberg_group
 """
 
 import json
@@ -50,6 +44,16 @@ class ThermalDataLoader:
         'pliensbachian_1', 'pliensbachian_2',
         'sinemurian_1', 'sinemurian_2'
     ]
+    
+    # Mapping: horizon_name -> belegpunkte_filename_prefix
+    BELEGPUNKTE_MAPPING = {
+        'hettangian_1': 'Het1',
+        'hettangian_2': 'Het2',
+        'pliensbachian_1': 'Pli1',
+        'pliensbachian_2': 'Pli2',
+        'sinemurian_1': 'Sin1',
+        'sinemurian_2': 'Sin2'
+    }
     
     def __init__(self, config_path, base_dir="data/inputs", geoTIS_dir="data/inputs/geoTIS/temperature"):
         """
@@ -93,6 +97,12 @@ class ThermalDataLoader:
         Handles multiple filename formats:
         - Simple: +100.DATA, -500.DATA
         - Prefixed: T2022_LIAG_AGEMAR_+100.data, T2022_LIAG_AGEMAR_-2500.data
+        
+        Format: German locale with comma decimal separator
+        - Delimiter: semicolon (;)
+        - Decimal: comma (,)
+        - Headers: First 2 lines are metadata
+        - Missing data: -99999
         
         Returns:
             Dict: {depth_value: {'X': array, 'Y': array, 'T': array, 'STDV': array}}
@@ -139,12 +149,28 @@ class ThermalDataLoader:
                     logger.debug(f"  ⚠ Could not parse depth from filename: {data_file.name}")
                     continue
                 
-                # Read .DATA file (Format: X; Y; Temperature; STDV)
-                df = pd.read_csv(data_file, delimiter=';', skipinitialspace=True,
-                                 names=['X', 'Y', 'Temperature', 'STDV'])
+                # Read .DATA file
+                # Format: X; Y; Temperature; STDV
+                # German locale: comma as decimal separator
+                # Skip first 2 lines (headers)
+                df = pd.read_csv(
+                    data_file, 
+                    delimiter=';', 
+                    skipinitialspace=True,
+                    skiprows=2,  # Skip metadata header lines
+                    names=['X', 'Y', 'Temperature', 'STDV'],
+                    decimal=','  # German decimal separator
+                )
                 
                 if len(df) == 0:
                     logger.debug(f"  ⚠ Empty file: {data_file.name}")
+                    continue
+                
+                # Filter out missing data (-99999)
+                df = df[(df['Temperature'] != -99999) & (df['STDV'] != -99999)]
+                
+                if len(df) == 0:
+                    logger.debug(f"  ⚠ No valid data in: {data_file.name}")
                     continue
                 
                 geoTIS_data[depth] = {
@@ -154,7 +180,7 @@ class ThermalDataLoader:
                     'STDV': df['STDV'].values
                 }
                 
-                logger.debug(f"  ✓ {data_file.name}: depth={depth:>5}m, {len(df):>5} points, T [{df['Temperature'].min():>6.1f}, {df['Temperature'].max():>6.1f}]°C")
+                logger.debug(f"  ✓ {data_file.name}: depth={depth:>5}m, {len(df):>5} valid points, T [{df['Temperature'].min():>6.1f}, {df['Temperature'].max():>6.1f}]°C")
             
             except Exception as e:
                 logger.error(f"  ✗ Error reading {data_file.name}: {e}")
@@ -241,14 +267,25 @@ class ThermalDataLoader:
     
     def find_belegpunkte_shapefile(self, horizon_name):
         """Find Belegpunkte shapefile for horizon"""
-        possible_names = [
-            f"{horizon_name}_Belegpunkte.shp",
-            f"{horizon_name.replace('_', '')}Belegpunkte.shp",
-        ]
+        # Use mapping to get correct filename prefix
+        if horizon_name not in self.BELEGPUNKTE_MAPPING:
+            logger.warning(f"  ⚠ No mapping for {horizon_name}")
+            return None
         
-        for name in possible_names:
-            for path in self.base_dir.rglob(name):
-                return path
+        prefix = self.BELEGPUNKTE_MAPPING[horizon_name]
+        shp_filename = f"{prefix}_Belegpunkte.shp"
+        
+        # Search in horizon-specific directory
+        horizon_dir = self.base_dir / "reservoirs" / horizon_name
+        shp_path = horizon_dir / shp_filename
+        
+        if shp_path.exists():
+            return shp_path
+        
+        # Fallback: search recursively
+        for path in self.base_dir.rglob(shp_filename):
+            return path
+        
         return None
     
     def find_potential_shapefile(self, horizon_name):
@@ -399,7 +436,7 @@ class ThermalDataLoader:
         """
         Combine kriging error and borehole density into single confidence layer
         
-        Confidence = (1 - kriging_error_normalized) × density_confidence
+        Confidence = sqrt((1 - kriging_error_normalized) × density_confidence)
         
         Args:
             kriging_error: Kriging standard error surface (0-max)
