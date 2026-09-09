@@ -326,7 +326,13 @@ class ThermalDataLoader:
     
     def krige_surface(self, borehole_gdf, column_name, variogram_model='spherical'):
         """
-        Interpolate surface using Ordinary Kriging
+        Interpolate surface using Ordinary Kriging (scikit-gstat)
+        
+        Uses correct scikit-gstat API:
+        - Variogram() to fit spatial model
+        - OrdinaryKriging() to create kriging interpolator
+        - transform() to predict at grid points
+        - sigma attribute to get kriging variance
         
         Args:
             borehole_gdf: GeoDataFrame with borehole data
@@ -354,6 +360,10 @@ class ThermalDataLoader:
             logger.info(f"      Fitting variogram ({variogram_model})...")
             vario = Variogram(coords, values, model=variogram_model, maxlag='median')
             
+            # Create Ordinary Kriging interpolator
+            logger.info(f"      Creating kriging interpolator...")
+            ok = OrdinaryKriging(vario, min_points=5, max_points=15, mode='exact')
+            
             # Create grid
             left = self.extent['left']
             right = self.extent['right']
@@ -364,28 +374,26 @@ class ThermalDataLoader:
             y_grid = np.linspace(bottom, top, self.grid_size[1])
             X_mesh, Y_mesh = np.meshgrid(x_grid, y_grid)
             
-            # Flatten grid for kriging
-            grid_points = np.column_stack([X_mesh.ravel(), Y_mesh.ravel()])
-            
-            # Ordinary Kriging
+            # Perform kriging using correct API
+            # transform() takes flattened X and Y arrays separately
             logger.info(f"      Performing kriging...")
-            ok = OrdinaryKriging(vario, coordinates=coords, values=values)
-            
-            # Predict at grid points
-            predictions = ok.predict(grid_points)
-            variance = ok.variance(grid_points)
+            predictions = ok.transform(X_mesh.ravel(), Y_mesh.ravel())
+            variance = ok.sigma  # Get kriging variance from sigma attribute
             
             # Reshape to grid
             kriged_surface = predictions.reshape(self.grid_size[1], self.grid_size[0])
             kriging_variance = variance.reshape(self.grid_size[1], self.grid_size[0])
+            kriging_std_error = np.sqrt(kriging_variance)
             
-            logger.info(f"      ✓ Kriging complete. Variance range: [{kriging_variance.min():.4f}, {kriging_variance.max():.4f}]")
+            logger.info(f"      ✓ Kriging complete. Std error range: [{kriging_std_error.min():.4f}, {kriging_std_error.max():.4f}]")
             
-            return kriged_surface.astype(np.float32), np.sqrt(kriging_variance).astype(np.float32)
+            return kriged_surface.astype(np.float32), kriging_std_error.astype(np.float32)
         
         except Exception as e:
             logger.error(f"    ✗ Kriging failed: {e}")
             logger.info(f"    Falling back to linear interpolation...")
+            import traceback
+            traceback.print_exc()
             return self.interpolate_surface_linear(borehole_gdf, column_name)
     
     def interpolate_surface_linear(self, borehole_gdf, column_name, method='linear'):
@@ -680,7 +688,8 @@ class ThermalDataLoader:
                 'horizon': horizon_name,
                 'tier': 1,
                 'data_type': 'borehole_interpolated_kriged',
-                'interpolation_method': 'Ordinary Kriging (spherical variogram)',
+                'interpolation_method': 'Ordinary Kriging (spherical variogram)' if KRIGING_AVAILABLE else 'Linear interpolation (kriging unavailable)',
+                'kriging_library': 'scikit-gstat' if KRIGING_AVAILABLE else 'scipy.interpolate',
                 'boreholes': len(borehole_gdf),
                 'depth_range_m': [float(depth_surface.min()), float(depth_surface.max())],
                 'thickness_range_m': [float(thickness_surface.min()), float(thickness_surface.max())],
@@ -756,7 +765,9 @@ def main():
     if not KRIGING_AVAILABLE:
         logger.warning("\n⚠ scikit-gstat not installed!")
         logger.warning("To use Kriging, install: pip install scikit-gstat")
-        logger.warning("Falling back to linear interpolation for now...\n")
+        logger.warning("Using linear interpolation as fallback...\n")
+    else:
+        logger.info("\n✓ scikit-gstat available - using Ordinary Kriging\n")
     
     loader = ThermalDataLoader(
         config_path="data/inputs/metadata.json",
@@ -774,7 +785,7 @@ def main():
     logger.info("\nEvidence layers ready for PFA combination model:")
     logger.info("  - *_depth_surface.tif/.npy")
     logger.info("  - *_thickness_surface.tif/.npy")
-    logger.info("  - *_temperature_surface.tif/.npy (now kriged - smooth, no artifacts!)")
+    logger.info("  - *_temperature_surface.tif/.npy (kriged - smooth, no artifacts!)")
     logger.info("  - *_geothermal_gradient.tif/.npy")
     logger.info("  - *_confidence.tif/.npy")
     logger.info("  - *_temperature_stdv.tif/.npy")
