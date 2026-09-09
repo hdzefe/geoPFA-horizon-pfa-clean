@@ -166,18 +166,26 @@ class ThermalDataLoader:
                     logger.debug(f"  ⚠ Empty file: {data_file.name}")
                     continue
                 
+                # Convert columns to numeric, handling both German (,) and English (.) decimals
+                for col in ['X', 'Y', 'Temperature', 'STDV']:
+                    # First convert string to numeric (handles both , and .)
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+                
+                # Drop rows with NaN
+                df = df.dropna()
+                
                 # Filter out missing data (-99999)
-                df = df[(df['Temperature'] != -99999) & (df['STDV'] != -99999)]
+                df = df[(df['Temperature'] != -99999.0) & (df['STDV'] != -99999.0)]
                 
                 if len(df) == 0:
                     logger.debug(f"  ⚠ No valid data in: {data_file.name}")
                     continue
                 
                 geoTIS_data[depth] = {
-                    'X': df['X'].values,
-                    'Y': df['Y'].values,
-                    'T': df['Temperature'].values,
-                    'STDV': df['STDV'].values
+                    'X': df['X'].values.astype(np.float32),
+                    'Y': df['Y'].values.astype(np.float32),
+                    'T': df['Temperature'].values.astype(np.float32),
+                    'STDV': df['STDV'].values.astype(np.float32)
                 }
                 
                 logger.debug(f"  ✓ {data_file.name}: depth={depth:>5}m, {len(df):>5} valid points, T [{df['Temperature'].min():>6.1f}, {df['Temperature'].max():>6.1f}]°C")
@@ -319,15 +327,6 @@ class ThermalDataLoader:
             gdf['X'] = gdf.geometry.x
             gdf['Y'] = gdf.geometry.y
             
-            # Find depth/thickness columns
-            depth_cols = [c for c in gdf.columns if any(kw in c.lower() for kw in 
-                         ['top', 'tiefe', 'depth', 'oben'])]
-            thick_cols = [c for c in gdf.columns if any(kw in c.lower() for kw in 
-                         ['thick', 'mächt', 'maechtigkeit', 'dicke'])]
-            
-            logger.info(f"    Potential depth columns: {depth_cols}")
-            logger.info(f"    Potential thickness columns: {thick_cols}")
-            
             return gdf
         
         except Exception as e:
@@ -346,14 +345,14 @@ class ThermalDataLoader:
         Returns:
             Interpolated 2D array + kriging standard error estimate
         """
-        # Extract valid data
+        # Extract valid data (exclude NULL/NaN)
         valid = borehole_gdf[borehole_gdf[column_name].notna()].copy()
         
         if len(valid) < 3:
-            logger.warning(f"    ⚠ Less than 3 valid points for {column_name}")
+            logger.warning(f"    ⚠ Less than 3 valid points for {column_name} ({len(valid)} found)")
             return None, None
         
-        logger.info(f"    Interpolating {column_name}: {len(valid)} valid points")
+        logger.info(f"    Interpolating {column_name}: {len(valid)} valid points (from {len(borehole_gdf)} total)")
         
         # Create regular grid
         left = self.extent['left']
@@ -367,7 +366,7 @@ class ThermalDataLoader:
         
         # Prepare data
         points = np.column_stack([valid['X'], valid['Y']])
-        values = valid[column_name].values
+        values = valid[column_name].values.astype(np.float32)
         grid_points = np.column_stack([X_mesh.ravel(), Y_mesh.ravel()])
         
         # Interpolate
@@ -569,24 +568,34 @@ class ThermalDataLoader:
                 logger.error(f"✗ No borehole data")
                 return None
             
-            # Find depth/thickness columns
-            depth_col = None
-            thick_col = None
+            # Use specified columns: Teufe (depth), Gesamtmaec (thickness)
+            depth_col = 'Teufe'
+            thick_col = 'Gesamtmaec'
             
-            for col in borehole_gdf.columns:
-                col_lower = col.lower()
-                if depth_col is None and any(kw in col_lower for kw in ['top', 'tiefe_top', 'depth_top', 'oben']):
-                    depth_col = col
-                if thick_col is None and any(kw in col_lower for kw in ['thick', 'mächt', 'maechtigkeit', 'dicke']):
-                    if 'sand' not in col_lower:
-                        thick_col = col
+            # Check if columns exist
+            if depth_col not in borehole_gdf.columns:
+                logger.error(f"✗ Column '{depth_col}' not found")
+                logger.error(f"  Available columns: {list(borehole_gdf.columns)}")
+                return None
             
-            if depth_col is None or thick_col is None:
-                logger.error(f"✗ Could not find depth/thickness columns")
+            if thick_col not in borehole_gdf.columns:
+                logger.error(f"✗ Column '{thick_col}' not found")
                 logger.error(f"  Available columns: {list(borehole_gdf.columns)}")
                 return None
             
             logger.info(f"  Using: depth='{depth_col}', thickness='{thick_col}'")
+            
+            # Count valid records (exclude NULL depths = outcrops)
+            valid_depth_records = borehole_gdf[borehole_gdf[depth_col].notna()]
+            logger.info(f"  Valid records with depth (boreholes): {len(valid_depth_records)}/{len(borehole_gdf)}")
+            logger.info(f"  Outcrop records (NULL depth): {len(borehole_gdf) - len(valid_depth_records)}")
+            
+            if len(valid_depth_records) < 3:
+                logger.error(f"✗ Not enough borehole data ({len(valid_depth_records)} < 3)")
+                return None
+            
+            # Use only valid borehole records for interpolation
+            borehole_gdf = valid_depth_records.copy()
             
             # Interpolate depth surface
             logger.info(f"\n2. Interpolating depth surface...")
@@ -671,7 +680,7 @@ class ThermalDataLoader:
             with open(metadata_file, 'w') as f:
                 json.dump(metadata, f, indent=2)
             
-            logger.info(f"\n✓ {horizon_name} completed")
+            logger.info(f"\n✓ {horizon_name} completed successfully!")
             
             return metadata
         
@@ -708,6 +717,7 @@ class ThermalDataLoader:
         
         for horizon, meta in sorted(results.items()):
             logger.info(f"\n{horizon}:")
+            logger.info(f"  Boreholes: {meta['boreholes']}")
             logger.info(f"  Depth: {meta['mean_depth_m']:.0f} m (range: {meta['depth_range_m'][0]:.0f}-{meta['depth_range_m'][1]:.0f})")
             logger.info(f"  Temperature: {meta['mean_temperature_C']:.1f}°C (range: {meta['temperature_range_C'][0]:.1f}-{meta['temperature_range_C'][1]:.1f})")
             logger.info(f"  Confidence: {meta['mean_confidence']:.2f}")
