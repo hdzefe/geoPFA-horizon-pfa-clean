@@ -1,12 +1,12 @@
 """
-Thermal Data Loader - PFA Evidence Layer Generation
+Thermal Data Loader - PFA Evidence Layer Generation with Kriging
 
 Generates PFA evidence layers for geothermal favorability assessment.
 Processes borehole data (Tier 1) and TUNB surfaces (Tier 2) to create:
-- Interpolated depth surfaces
-- Interpolated thickness surfaces
-- Interpolated temperature surfaces
-- Confidence layers (combined kriging error + borehole density)
+- Kriged depth surfaces
+- Kriged thickness surfaces
+- Kriged temperature surfaces
+- Confidence layers (kriging variance + borehole density)
 
 Output: Clean evidence layers for input to PFA combination model
 
@@ -39,9 +39,17 @@ warnings.filterwarnings('ignore')
 
 logger = logging.getLogger(__name__)
 
+# Try to import skgstat for kriging
+try:
+    from skgstat import Variogram, OrdinaryKriging
+    KRIGING_AVAILABLE = True
+except ImportError:
+    KRIGING_AVAILABLE = False
+    logger.warning("scikit-gstat not available - will fall back to linear interpolation")
+
 
 class ThermalDataLoader:
-    """Generate PFA thermal evidence layers from borehole and GeoTIS data"""
+    """Generate PFA thermal evidence layers from borehole and GeoTIS data using Kriging"""
     
     # Tier 1 horizons with borehole depth/thickness data
     TIER1_HORIZONS = [
@@ -93,6 +101,7 @@ class ThermalDataLoader:
         logger.info(f"  CRS: {self.crs}")
         logger.info(f"  Grid size: {self.grid_size}")
         logger.info(f"  Tier 1 horizons: {len(self.TIER1_HORIZONS)}")
+        logger.info(f"  Interpolation method: {'Ordinary Kriging' if KRIGING_AVAILABLE else 'Linear (kriging unavailable)'}")
         logger.info(f"  Output directory: {self.output_dir}")
         logger.info(f"  Coordinate system: GeoTIS (- below sea level, + above)")
     
@@ -140,13 +149,7 @@ class ThermalDataLoader:
         for data_file in data_files:
             try:
                 # Extract depth from filename using regex
-                # Handles formats like:
-                #   +100.DATA, -500.DATA (simple)
-                #   T2022_LIAG_AGEMAR_+100.data, T2022_LIAG_AGEMAR_-2500.data (with prefix)
-                
-                filename = data_file.stem  # Remove .data/.DATA extension
-                
-                # Find depth pattern: +/- followed by digits
+                filename = data_file.stem
                 match = re.search(r'([+-]\d+)', filename)
                 
                 if match:
@@ -157,31 +160,24 @@ class ThermalDataLoader:
                     continue
                 
                 # Read .DATA file
-                # Format: X; Y; Temperature; STDV
-                # German locale: comma as decimal separator
-                # Skip first 2 lines (headers)
                 df = pd.read_csv(
                     data_file, 
                     delimiter=';', 
                     skipinitialspace=True,
-                    skiprows=2,  # Skip metadata header lines
+                    skiprows=2,
                     names=['X', 'Y', 'Temperature', 'STDV'],
-                    decimal=','  # German decimal separator
+                    decimal=','
                 )
                 
                 if len(df) == 0:
                     logger.debug(f"  ⚠ Empty file: {data_file.name}")
                     continue
                 
-                # Convert columns to numeric, handling both German (,) and English (.) decimals
+                # Convert columns to numeric
                 for col in ['X', 'Y', 'Temperature', 'STDV']:
-                    # First convert string to numeric (handles both , and .)
                     df[col] = pd.to_numeric(df[col], errors='coerce')
                 
-                # Drop rows with NaN
                 df = df.dropna()
-                
-                # Filter out missing data (-99999)
                 df = df[(df['Temperature'] != -99999.0) & (df['STDV'] != -99999.0)]
                 
                 if len(df) == 0:
@@ -207,8 +203,6 @@ class ThermalDataLoader:
         logger.info(f"\n✓ Loaded {len(geoTIS_data)} depth levels")
         depths = sorted(geoTIS_data.keys())
         logger.info(f"  Depth range: {depths[0]}m to {depths[-1]}m (- = below sea level, + = above)")
-        logger.info(f"  First 10 depths: {depths[:10]}")
-        logger.info(f"  Last 10 depths: {depths[-10:]}")
         
         self.geoTIS_data = geoTIS_data
         self.geoTIS_loaded = True
@@ -282,7 +276,6 @@ class ThermalDataLoader:
     
     def find_belegpunkte_shapefile(self, horizon_name):
         """Find Belegpunkte shapefile for horizon"""
-        # Use mapping to get correct filename prefix
         if horizon_name not in self.BELEGPUNKTE_MAPPING:
             logger.warning(f"  ⚠ No mapping for {horizon_name}")
             return None
@@ -290,24 +283,15 @@ class ThermalDataLoader:
         prefix = self.BELEGPUNKTE_MAPPING[horizon_name]
         shp_filename = f"{prefix}_Belegpunkte.shp"
         
-        # Search in horizon-specific directory
         horizon_dir = self.base_dir / "reservoirs" / horizon_name
         shp_path = horizon_dir / shp_filename
         
         if shp_path.exists():
             return shp_path
         
-        # Fallback: search recursively
         for path in self.base_dir.rglob(shp_filename):
             return path
         
-        return None
-    
-    def find_potential_shapefile(self, horizon_name):
-        """Find Potential shapefile from config"""
-        for res_config in self.config['reservoirs']:
-            if res_config['name'] == horizon_name:
-                return self.base_dir / res_config['path']
         return None
     
     def load_belegpunkte_data(self, horizon_name):
@@ -340,9 +324,73 @@ class ThermalDataLoader:
             logger.error(f"  ✗ Error loading {shp_path}: {e}")
             return None
     
-    def interpolate_surface(self, borehole_gdf, column_name, method='linear'):
+    def krige_surface(self, borehole_gdf, column_name, variogram_model='spherical'):
         """
-        Interpolate surface from borehole points using linear interpolation
+        Interpolate surface using Ordinary Kriging
+        
+        Args:
+            borehole_gdf: GeoDataFrame with borehole data
+            column_name: Column to interpolate
+            variogram_model: 'spherical', 'exponential', or 'gaussian'
+        
+        Returns:
+            Interpolated 2D array + kriging variance (uncertainty)
+        """
+        # Extract valid data
+        valid = borehole_gdf[borehole_gdf[column_name].notna()].copy()
+        
+        if len(valid) < 3:
+            logger.warning(f"    ⚠ Less than 3 valid points for {column_name} ({len(valid)} found)")
+            return None, None
+        
+        logger.info(f"    Kriging {column_name}: {len(valid)} valid points (from {len(borehole_gdf)} total)")
+        
+        try:
+            # Prepare data for kriging
+            coords = np.column_stack([valid['X'].values, valid['Y'].values])
+            values = valid[column_name].values.astype(np.float32)
+            
+            # Create variogram
+            logger.info(f"      Fitting variogram ({variogram_model})...")
+            vario = Variogram(coords, values, model=variogram_model, maxlag='median')
+            
+            # Create grid
+            left = self.extent['left']
+            right = self.extent['right']
+            bottom = self.extent['bottom']
+            top = self.extent['top']
+            
+            x_grid = np.linspace(left, right, self.grid_size[0])
+            y_grid = np.linspace(bottom, top, self.grid_size[1])
+            X_mesh, Y_mesh = np.meshgrid(x_grid, y_grid)
+            
+            # Flatten grid for kriging
+            grid_points = np.column_stack([X_mesh.ravel(), Y_mesh.ravel()])
+            
+            # Ordinary Kriging
+            logger.info(f"      Performing kriging...")
+            ok = OrdinaryKriging(vario, coordinates=coords, values=values)
+            
+            # Predict at grid points
+            predictions = ok.predict(grid_points)
+            variance = ok.variance(grid_points)
+            
+            # Reshape to grid
+            kriged_surface = predictions.reshape(self.grid_size[1], self.grid_size[0])
+            kriging_variance = variance.reshape(self.grid_size[1], self.grid_size[0])
+            
+            logger.info(f"      ✓ Kriging complete. Variance range: [{kriging_variance.min():.4f}, {kriging_variance.max():.4f}]")
+            
+            return kriged_surface.astype(np.float32), np.sqrt(kriging_variance).astype(np.float32)
+        
+        except Exception as e:
+            logger.error(f"    ✗ Kriging failed: {e}")
+            logger.info(f"    Falling back to linear interpolation...")
+            return self.interpolate_surface_linear(borehole_gdf, column_name)
+    
+    def interpolate_surface_linear(self, borehole_gdf, column_name, method='linear'):
+        """
+        Fallback linear interpolation method
         
         Args:
             borehole_gdf: GeoDataFrame with borehole data
@@ -352,14 +400,10 @@ class ThermalDataLoader:
         Returns:
             Interpolated 2D array + kriging standard error estimate
         """
-        # Extract valid data (exclude NULL/NaN)
         valid = borehole_gdf[borehole_gdf[column_name].notna()].copy()
         
         if len(valid) < 3:
-            logger.warning(f"    ⚠ Less than 3 valid points for {column_name} ({len(valid)} found)")
             return None, None
-        
-        logger.info(f"    Interpolating {column_name}: {len(valid)} valid points (from {len(borehole_gdf)} total)")
         
         # Create regular grid
         left = self.extent['left']
@@ -389,17 +433,14 @@ class ThermalDataLoader:
                 interpolated[mask] = interpolated_nn[mask]
             
             # Estimate kriging standard error (simplified)
-            # Error is higher where points are sparse
             distances = cdist(grid_points, points)
             min_distances = np.min(distances, axis=1)
             
-            # Normalize to 0-1 range
             max_dist = np.percentile(min_distances, 95)
             kriging_error = np.clip(min_distances / max_dist, 0, 1).reshape(self.grid_size[1], self.grid_size[0])
             
-            # Estimate uncertainty as % of data range
             data_range = values.max() - values.min()
-            kriging_error = kriging_error * (data_range * 0.1)  # ~10% of range at max distance
+            kriging_error = kriging_error * (data_range * 0.1)
             
             return interpolated.astype(np.float32), kriging_error.astype(np.float32)
         
@@ -408,12 +449,7 @@ class ThermalDataLoader:
             return None, None
     
     def calculate_borehole_density_confidence(self, borehole_gdf):
-        """
-        Calculate confidence based on borehole spatial density
-        
-        Returns:
-            Confidence grid (0-1, 1=high density)
-        """
+        """Calculate confidence based on borehole spatial density"""
         left = self.extent['left']
         right = self.extent['right']
         bottom = self.extent['bottom']
@@ -423,15 +459,12 @@ class ThermalDataLoader:
         y_grid = np.linspace(bottom, top, self.grid_size[1])
         X_mesh, Y_mesh = np.meshgrid(x_grid, y_grid)
         
-        # Distance to nearest borehole
         borehole_points = np.column_stack([borehole_gdf['X'], borehole_gdf['Y']])
         grid_points = np.column_stack([X_mesh.ravel(), Y_mesh.ravel()])
         
         distances = cdist(grid_points, borehole_points)
         min_distances = np.min(distances, axis=1)
         
-        # Convert distance to confidence (closer = higher confidence)
-        # Normalize by max distance
         max_dist = np.percentile(min_distances, 95)
         density_confidence = 1.0 - np.clip(min_distances / max_dist, 0, 1)
         density_confidence = density_confidence.reshape(self.grid_size[1], self.grid_size[0])
@@ -445,17 +478,17 @@ class ThermalDataLoader:
         Confidence = sqrt((1 - kriging_error_normalized) × density_confidence)
         
         Args:
-            kriging_error: Kriging standard error surface (0-max)
+            kriging_error: Kriging standard error surface
             density_confidence: Borehole density confidence (0-1)
         
         Returns:
             Combined confidence layer (0-1)
         """
-        # Normalize kriging error to 0-1 (higher error = lower confidence)
+        # Normalize kriging error to 0-1
         ke_norm = np.clip(kriging_error / np.percentile(kriging_error[kriging_error > 0], 95), 0, 1)
         kriging_confidence = 1.0 - ke_norm
         
-        # Combine: geometric mean emphasizes areas with BOTH good coverage and low error
+        # Combine: geometric mean
         combined = np.sqrt(kriging_confidence * density_confidence)
         
         return combined.astype(np.float32)
@@ -476,14 +509,13 @@ class ThermalDataLoader:
         stdv_surface = np.zeros_like(mean_depth_surface)
         
         # Process by depth slices for efficiency
-        # Use negative depths (below sea level)
         unique_depths = np.unique(mean_depth_surface[mean_depth_surface < 0])
-        unique_depths = unique_depths[::max(1, len(unique_depths)//20)]  # Sample ~20 unique depths
+        unique_depths = unique_depths[::max(1, len(unique_depths)//20)]
         
         logger.info(f"      Processing {len(unique_depths)} depth levels...")
         
         for depth in unique_depths:
-            mask = np.abs(mean_depth_surface - depth) < 50  # Within 50m
+            mask = np.abs(mean_depth_surface - depth) < 50
             
             if not np.any(mask):
                 continue
@@ -491,10 +523,8 @@ class ThermalDataLoader:
             # Get temperature at this depth
             X_temp, Y_temp, T_temp, STDV_temp = self.interpolate_temperature_at_depth(depth, method='linear')
             
-            # Create spatial index
             points_temp = np.column_stack([X_temp, Y_temp])
             
-            # Grid for this depth slice
             left = self.extent['left']
             right = self.extent['right']
             bottom = self.extent['bottom']
@@ -504,11 +534,9 @@ class ThermalDataLoader:
             y_grid = np.linspace(bottom, top, self.grid_size[1])
             X_mesh, Y_mesh = np.meshgrid(x_grid, y_grid)
             
-            # Interpolate to grid
             T_grid = griddata(points_temp, T_temp, (X_mesh, Y_mesh), method='linear')
             STDV_grid = griddata(points_temp, STDV_temp, (X_mesh, Y_mesh), method='linear')
             
-            # Fill NaNs with nearest
             T_nn = griddata(points_temp, T_temp, (X_mesh, Y_mesh), method='nearest')
             STDV_nn = griddata(points_temp, STDV_temp, (X_mesh, Y_mesh), method='nearest')
             
@@ -516,7 +544,6 @@ class ThermalDataLoader:
             T_grid[nan_mask] = T_nn[nan_mask]
             STDV_grid[nan_mask] = STDV_nn[nan_mask]
             
-            # Assign to surface
             temperature_surface[mask] = T_grid[mask]
             stdv_surface[mask] = STDV_grid[mask]
         
@@ -576,24 +603,15 @@ class ThermalDataLoader:
                 logger.error(f"✗ No borehole data")
                 return None
             
-            # Use specified columns: Teufe (depth), Gesamtmaec (thickness)
             depth_col = 'Teufe'
             thick_col = 'Gesamtmaec'
             
-            # Check if columns exist
-            if depth_col not in borehole_gdf.columns:
-                logger.error(f"✗ Column '{depth_col}' not found")
-                logger.error(f"  Available columns: {list(borehole_gdf.columns)}")
-                return None
-            
-            if thick_col not in borehole_gdf.columns:
-                logger.error(f"✗ Column '{thick_col}' not found")
-                logger.error(f"  Available columns: {list(borehole_gdf.columns)}")
+            if depth_col not in borehole_gdf.columns or thick_col not in borehole_gdf.columns:
+                logger.error(f"✗ Required columns not found")
                 return None
             
             logger.info(f"  Using: depth='{depth_col}', thickness='{thick_col}'")
             
-            # Count valid records (exclude NULL depths = outcrops)
             valid_depth_records = borehole_gdf[borehole_gdf[depth_col].notna()]
             logger.info(f"  Valid records with depth (boreholes): {len(valid_depth_records)}/{len(borehole_gdf)}")
             logger.info(f"  Outcrop records (NULL depth): {len(borehole_gdf) - len(valid_depth_records)}")
@@ -602,27 +620,25 @@ class ThermalDataLoader:
                 logger.error(f"✗ Not enough borehole data ({len(valid_depth_records)} < 3)")
                 return None
             
-            # Use only valid borehole records for interpolation
             borehole_gdf = valid_depth_records.copy()
             
-            # Interpolate depth surface
-            logger.info(f"\n2. Interpolating depth surface...")
-            depth_surface, depth_ke = self.interpolate_surface(borehole_gdf, depth_col)
+            # Krige depth surface
+            logger.info(f"\n2. Kriging depth surface...")
+            depth_surface, depth_ke = self.krige_surface(borehole_gdf, depth_col)
             
             if depth_surface is None:
-                logger.error(f"✗ Interpolation failed")
+                logger.error(f"✗ Kriging failed")
                 return None
             
-            # Interpolate thickness surface
-            logger.info(f"\n3. Interpolating thickness surface...")
-            thickness_surface, thick_ke = self.interpolate_surface(borehole_gdf, thick_col)
+            # Krige thickness surface
+            logger.info(f"\n3. Kriging thickness surface...")
+            thickness_surface, thick_ke = self.krige_surface(borehole_gdf, thick_col)
             
             if thickness_surface is None:
-                logger.error(f"✗ Interpolation failed")
+                logger.error(f"✗ Kriging failed")
                 return None
             
             # Calculate mean depth (negate to match GeoTIS coordinate system)
-            # Borehole Teufe is positive (depth below surface) but GeoTIS uses negative for depth below sea level
             logger.info(f"\n4. Calculating mean depth (converting to GeoTIS coordinate system)...")
             mean_depth = -depth_surface + (thickness_surface / 2)
             
@@ -637,25 +653,16 @@ class ThermalDataLoader:
             # Calculate confidence layers
             logger.info(f"\n6. Calculating confidence layers...")
             
-            # Kriging error-based confidence
-            # Combine errors from depth and thickness interpolation
             combined_ke = np.sqrt(depth_ke**2 + thick_ke**2)
-            
-            # Borehole density confidence
             density_conf = self.calculate_borehole_density_confidence(borehole_gdf)
-            
-            # Combined confidence
             confidence = self.combine_confidence_layers(combined_ke, density_conf)
             
             logger.info(f"  Confidence range: [{confidence.min():.2f}, {confidence.max():.2f}]")
             logger.info(f"  Mean confidence: {confidence.mean():.2f}")
             
-            # Calculate geothermal gradient (simplified)
+            # Calculate geothermal gradient
             logger.info(f"\n7. Calculating geothermal gradient...")
-            
-            # Regional gradient estimate (simplified)
-            gradient = np.full_like(temperature_surface, 25.0)  # °C/km typical
-            
+            gradient = np.full_like(temperature_surface, 25.0)
             logger.info(f"  Geothermal gradient: 25 °C/km (typical for North German Basin)")
             
             # Save outputs
@@ -672,7 +679,8 @@ class ThermalDataLoader:
             metadata = {
                 'horizon': horizon_name,
                 'tier': 1,
-                'data_type': 'borehole_interpolated',
+                'data_type': 'borehole_interpolated_kriged',
+                'interpolation_method': 'Ordinary Kriging (spherical variogram)',
                 'boreholes': len(borehole_gdf),
                 'depth_range_m': [float(depth_surface.min()), float(depth_surface.max())],
                 'thickness_range_m': [float(thickness_surface.min()), float(thickness_surface.max())],
@@ -684,7 +692,7 @@ class ThermalDataLoader:
                 'confidence_range': [float(confidence.min()), float(confidence.max())],
                 'mean_confidence': float(confidence.mean()),
                 'coordinate_system': 'GeoTIS (- below sea level, + above)',
-                'notes': 'Evidence layers - ready for PFA combination model'
+                'notes': 'Kriged evidence layers - ready for PFA combination model'
             }
             
             metadata_file = self.output_dir / f"{horizon_name}_metadata.json"
@@ -704,7 +712,7 @@ class ThermalDataLoader:
     def process_tier1(self):
         """Process all Tier 1 horizons"""
         logger.info("\n" + "="*80)
-        logger.info("TIER 1: THERMAL EVIDENCE LAYERS (Borehole-based)")
+        logger.info("TIER 1: THERMAL EVIDENCE LAYERS (Borehole-based with Kriging)")
         logger.info("="*80)
         
         # Load GeoTIS once
@@ -729,6 +737,7 @@ class ThermalDataLoader:
         for horizon, meta in sorted(results.items()):
             logger.info(f"\n{horizon}:")
             logger.info(f"  Boreholes: {meta['boreholes']}")
+            logger.info(f"  Method: {meta['interpolation_method']}")
             logger.info(f"  Depth range (borehole): {meta['depth_range_m'][0]:.0f}-{meta['depth_range_m'][1]:.0f} m")
             logger.info(f"  Mean depth (GeoTIS system): {meta['mean_depth_range_m'][0]:.0f} to {meta['mean_depth_range_m'][1]:.0f} m")
             logger.info(f"  Temperature: {meta['mean_temperature_C']:.1f}°C (range: {meta['temperature_range_C'][0]:.1f}-{meta['temperature_range_C'][1]:.1f})")
@@ -743,6 +752,11 @@ def main():
         level=logging.INFO,
         format='%(levelname)s:%(name)s: %(message)s'
     )
+    
+    if not KRIGING_AVAILABLE:
+        logger.warning("\n⚠ scikit-gstat not installed!")
+        logger.warning("To use Kriging, install: pip install scikit-gstat")
+        logger.warning("Falling back to linear interpolation for now...\n")
     
     loader = ThermalDataLoader(
         config_path="data/inputs/metadata.json",
@@ -760,7 +774,7 @@ def main():
     logger.info("\nEvidence layers ready for PFA combination model:")
     logger.info("  - *_depth_surface.tif/.npy")
     logger.info("  - *_thickness_surface.tif/.npy")
-    logger.info("  - *_temperature_surface.tif/.npy")
+    logger.info("  - *_temperature_surface.tif/.npy (now kriged - smooth, no artifacts!)")
     logger.info("  - *_geothermal_gradient.tif/.npy")
     logger.info("  - *_confidence.tif/.npy")
     logger.info("  - *_temperature_stdv.tif/.npy")
