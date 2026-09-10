@@ -1,5 +1,5 @@
 """
-Thermal Data Loader - PFA Evidence Layer Generation
+Thermal Data Loader - PFA Evidence Layer Generation - WITH DEBUG OUTPUT
 
 Generates PFA evidence layers for geothermal favorability assessment.
 Processes borehole data (Tier 1) using RBF interpolation with hybrid temperature source.
@@ -72,33 +72,20 @@ class ThermalDataLoader:
     }
     
     # Heat flow database parameters (GFZ German Heat Flow Database 2022) - FALLBACK
-    # North German Basin mean heat flow: ~65 mW/m²
-    # Thermal conductivity range: 2.5-3.5 W/(m·K)
-    # Derived gradient: (q / λ) = (65 mW/m² / 3000 W/(m·K)) ≈ 20-26 °C/km
     HEAT_FLOW_MEAN = 65.0  # mW/m²
     THERMAL_CONDUCTIVITY_LOW = 2.5  # W/(m·K)
     THERMAL_CONDUCTIVITY_HIGH = 3.5  # W/(m·K)
     
-    # Calculate gradient from heat flow
     GEOTHERMAL_GRADIENT = (HEAT_FLOW_MEAN / 1000.0) / ((THERMAL_CONDUCTIVITY_LOW + THERMAL_CONDUCTIVITY_HIGH) / 2.0) * 1000.0
     
-    # Surface temperature (typical for North German Basin)
     T_SURFACE = 10.0  # °C
     
     def __init__(self, config_path, base_dir="data/inputs", geoTIS_dir="data/inputs/geoTIS/temperature"):
-        """
-        Initialize thermal data loader
-        
-        Args:
-            config_path: Path to metadata.json
-            base_dir: Base directory for input data
-            geoTIS_dir: Directory with GeoTIS temperature .DATA files
-        """
+        """Initialize thermal data loader"""
         self.base_dir = Path(base_dir)
         self.config_path = Path(config_path)
         self.geoTIS_dir = Path(geoTIS_dir)
         
-        # Load configuration
         with open(self.config_path) as f:
             self.config = json.load(f)
         
@@ -106,11 +93,9 @@ class ThermalDataLoader:
         self.grid_size = self.config['grid_size']
         self.extent = self.config['extent']
         
-        # Create output directory
         self.output_dir = Path("data/outputs/thermal")
         self.output_dir.mkdir(parents=True, exist_ok=True)
         
-        # GeoTIS temperature data (cached)
         self.geoTIS_data = {}
         self.geoTIS_loaded = False
         
@@ -118,46 +103,20 @@ class ThermalDataLoader:
         logger.info(f"  CRS: {self.crs}")
         logger.info(f"  Grid size: {self.grid_size}")
         logger.info(f"  Tier 1 horizons: {len(self.TIER1_HORIZONS)}")
-        logger.info(f"  Interpolation method: RBF (Radial Basis Function)")
-        logger.info(f"  Output directory: {self.output_dir}")
-        logger.info(f"  Coordinate system: GeoTIS (- below sea level, + above)")
-        logger.info(f"  Data filtering: Excludes Teufe ≤ 0 (surface outcrops)")
-        logger.info(f"\n  Temperature Strategy (HYBRID):")
-        logger.info(f"    Primary: GeoTIS measured temperatures (where available)")
-        logger.info(f"    Fallback: Heat flow-derived geothermal gradient ({self.GEOTHERMAL_GRADIENT:.1f}°C/km)")
-        logger.info(f"    Surface temperature: {self.T_SURFACE:.1f}°C")
     
     def load_geoTIS_temperature_data(self):
-        """
-        Load all GeoTIS temperature .DATA files
-        
-        Handles multiple filename formats:
-        - Simple: +100.DATA, -500.DATA
-        - Prefixed: T2022_LIAG_AGEMAR_+100.data
-        
-        Format: German locale with comma decimal separator
-        - Delimiter: semicolon (;)
-        - Decimal: comma (,)
-        - Headers: First 2 lines are metadata
-        - Missing data: -99999
-        - Coordinate system: - below sea level, + above sea level
-        
-        Returns:
-            Dict: {depth_value: {'X': array, 'Y': array, 'T': array, 'STDV': array}}
-        """
+        """Load all GeoTIS temperature .DATA files"""
         logger.info(f"\n{'='*80}")
         logger.info("LOADING GEOТIS TEMPERATURE DATA")
         logger.info(f"{'='*80}")
         
         if self.geoTIS_loaded:
-            logger.info("✓ GeoTIS data already loaded")
             return self.geoTIS_data
         
         if not self.geoTIS_dir.exists():
             logger.error(f"✗ GeoTIS directory not found: {self.geoTIS_dir}")
             raise FileNotFoundError(f"GeoTIS directory: {self.geoTIS_dir}")
         
-        # Find all .DATA files
         data_files = sorted(self.geoTIS_dir.glob("*.DATA")) + sorted(self.geoTIS_dir.glob("*.data"))
         
         if not data_files:
@@ -170,7 +129,6 @@ class ThermalDataLoader:
         
         for data_file in data_files:
             try:
-                # Extract depth from filename using regex
                 filename = data_file.stem
                 match = re.search(r'([+-]\d+)', filename)
                 
@@ -178,10 +136,8 @@ class ThermalDataLoader:
                     depth_str = match.group(1)
                     depth = int(depth_str)
                 else:
-                    logger.debug(f"  ⚠ Could not parse depth from filename: {data_file.name}")
                     continue
                 
-                # Read .DATA file
                 df = pd.read_csv(
                     data_file, 
                     delimiter=';', 
@@ -192,10 +148,8 @@ class ThermalDataLoader:
                 )
                 
                 if len(df) == 0:
-                    logger.debug(f"  ⚠ Empty file: {data_file.name}")
                     continue
                 
-                # Convert columns to numeric
                 for col in ['X', 'Y', 'Temperature', 'STDV']:
                     df[col] = pd.to_numeric(df[col], errors='coerce')
                 
@@ -203,7 +157,6 @@ class ThermalDataLoader:
                 df = df[(df['Temperature'] != -99999.0) & (df['STDV'] != -99999.0)]
                 
                 if len(df) == 0:
-                    logger.debug(f"  ⚠ No valid data in: {data_file.name}")
                     continue
                 
                 geoTIS_data[depth] = {
@@ -212,37 +165,26 @@ class ThermalDataLoader:
                     'T': df['Temperature'].values.astype(np.float32),
                     'STDV': df['STDV'].values.astype(np.float32)
                 }
-                
-                logger.debug(f"  ✓ {data_file.name}: depth={depth:>5}m, {len(df):>5} valid points, T [{df['Temperature'].min():>6.1f}, {df['Temperature'].max():>6.1f}]°C")
             
             except Exception as e:
                 logger.error(f"  ✗ Error reading {data_file.name}: {e}")
                 continue
         
         if not geoTIS_data:
-            logger.warning("⚠ No valid GeoTIS data loaded - will use gradient fallback only")
+            logger.warning("⚠ No valid GeoTIS data loaded")
             self.geoTIS_loaded = True
             return {}
         
-        logger.info(f"\n✓ Loaded {len(geoTIS_data)} depth levels")
+        logger.info(f"✓ Loaded {len(geoTIS_data)} depth levels")
         depths = sorted(geoTIS_data.keys())
-        logger.info(f"  Depth range: {depths[0]}m to {depths[-1]}m (- = below sea level, + = above)")
+        logger.info(f"  Depth range: {depths[0]}m to {depths[-1]}m")
         
         self.geoTIS_data = geoTIS_data
         self.geoTIS_loaded = True
         return geoTIS_data
     
     def interpolate_temperature_at_depth(self, target_depth, method='linear'):
-        """
-        Interpolate temperature at arbitrary depth from GeoTIS data
-        
-        Args:
-            target_depth: Depth in meters (negative = below sea level)
-            method: 'linear' or 'nearest'
-        
-        Returns:
-            (X, Y, T, STDV) arrays at target depth, or None if no data available
-        """
+        """Interpolate temperature at arbitrary depth from GeoTIS data"""
         if not self.geoTIS_loaded or not self.geoTIS_data:
             return None
         
@@ -252,12 +194,10 @@ class ThermalDataLoader:
             data = self.geoTIS_data[target_depth]
             return data['X'], data['Y'], data['T'], data['STDV']
         
-        # Find surrounding depths
         below = [d for d in available_depths if d <= target_depth]
         above = [d for d in available_depths if d >= target_depth]
         
         if method == 'nearest' or len(below) == 0 or len(above) == 0:
-            # Use nearest depth
             if len(below) > 0 and len(above) > 0:
                 d_below = below[-1]
                 d_above = above[0]
@@ -270,18 +210,16 @@ class ThermalDataLoader:
             data = self.geoTIS_data[depth]
             return data['X'], data['Y'], data['T'], data['STDV']
         
-        else:  # linear interpolation
+        else:
             d_below = below[-1]
             d_above = above[0]
             
             data_below = self.geoTIS_data[d_below]
             data_above = self.geoTIS_data[d_above]
             
-            # Interpolation weights
             w_below = (d_above - target_depth) / (d_above - d_below)
             w_above = (target_depth - d_below) / (d_above - d_below)
             
-            # Match points and interpolate
             X_below = data_below['X']
             Y_below = data_below['Y']
             T_below = data_below['T']
@@ -289,10 +227,8 @@ class ThermalDataLoader:
             points_below = np.column_stack([X_below, Y_below])
             points_above = np.column_stack([data_above['X'], data_above['Y']])
             
-            # Interpolate above to below grid
             T_above_interp = griddata(points_above, data_above['T'], points_below, method='nearest')
             
-            # Linear interpolation
             T_interp = w_below * T_below + w_above * T_above_interp
             STDV_interp = np.sqrt((w_below * data_below['STDV'])**2 + (w_above * T_above_interp)**2)
             
@@ -301,7 +237,6 @@ class ThermalDataLoader:
     def find_belegpunkte_shapefile(self, horizon_name):
         """Find Belegpunkte shapefile for horizon"""
         if horizon_name not in self.BELEGPUNKTE_MAPPING:
-            logger.warning(f"  ⚠ No mapping for {horizon_name}")
             return None
         
         prefix = self.BELEGPUNKTE_MAPPING[horizon_name]
@@ -329,16 +264,11 @@ class ThermalDataLoader:
         try:
             gdf = gpd.read_file(shp_path)
             
-            logger.info(f"  ✓ Loaded: {shp_path.name}")
-            logger.info(f"    Total records: {len(gdf)}")
-            
-            # Ensure correct CRS
             if gdf.crs is None:
                 gdf.set_crs(self.crs, inplace=True)
             elif str(gdf.crs) != self.crs:
                 gdf = gdf.to_crs(self.crs)
             
-            # Extract coordinates
             gdf['X'] = gdf.geometry.x
             gdf['Y'] = gdf.geometry.y
             
@@ -349,27 +279,9 @@ class ThermalDataLoader:
             return None
     
     def rbf_interpolate_surface(self, borehole_gdf, column_name, function='thin_plate'):
-        """
-        Interpolate surface using Radial Basis Function (RBF)
-        
-        RBF advantages:
-        - No spatial range limits → covers entire basin
-        - No min/max point requirements → works with sparse data
-        - Smooth and natural interpolation
-        - No dropout zones with 0 values
-        
-        Args:
-            borehole_gdf: GeoDataFrame with borehole data
-            column_name: Column to interpolate
-            function: 'thin_plate', 'multiquadric', 'inverse_multiquadric', 'gaussian', etc.
-        
-        Returns:
-            Interpolated 2D array + uncertainty estimate
-        """
-        # Extract valid data (exclude NULL/NaN and values ≤ 0 for Teufe)
+        """Interpolate surface using RBF"""
         valid = borehole_gdf[borehole_gdf[column_name].notna()].copy()
         
-        # If this is Teufe column, exclude Teufe ≤ 0 (surface outcrops)
         if column_name == 'Teufe':
             valid = valid[valid[column_name] > 0]
         
@@ -377,21 +289,13 @@ class ThermalDataLoader:
             logger.warning(f"    ⚠ Less than 3 valid points for {column_name} ({len(valid)} found)")
             return None, None
         
-        logger.info(f"    RBF interpolating {column_name}: {len(valid)} valid points (from {len(borehole_gdf)} total)")
-        
         try:
-            # Prepare data
             x_pts = valid['X'].values
             y_pts = valid['Y'].values
             z_pts = valid[column_name].values.astype(np.float32)
             
-            logger.info(f"      Data range: {z_pts.min():.2f} - {z_pts.max():.2f}")
-            
-            # Create RBF interpolator
-            logger.info(f"      Fitting RBF ({function})...")
             rbf = Rbf(x_pts, y_pts, z_pts, function=function, epsilon=None, smooth=1.0)
             
-            # Create grid
             left = self.extent['left']
             right = self.extent['right']
             bottom = self.extent['bottom']
@@ -401,24 +305,17 @@ class ThermalDataLoader:
             y_grid = np.linspace(bottom, top, self.grid_size[1])
             X_mesh, Y_mesh = np.meshgrid(x_grid, y_grid)
             
-            # Interpolate to grid
-            logger.info(f"      Evaluating RBF on grid...")
             interpolated = rbf(X_mesh, Y_mesh)
             
-            logger.info(f"      ✓ Interpolation complete. Grid range: {np.nanmin(interpolated):.2f} - {np.nanmax(interpolated):.2f}")
-            
-            # Calculate uncertainty based on distance to nearest borehole
             grid_points = np.column_stack([X_mesh.ravel(), Y_mesh.ravel()])
             borehole_points = np.column_stack([x_pts, y_pts])
             
             distances = cdist(grid_points, borehole_points)
             min_distances = np.min(distances, axis=1)
             
-            # Uncertainty increases with distance from nearest borehole
             max_dist = np.percentile(min_distances, 95)
             uncertainty = np.clip(min_distances / max_dist, 0, 1).reshape(self.grid_size[1], self.grid_size[0])
             
-            # Scale uncertainty by data range
             data_range = z_pts.max() - z_pts.min()
             uncertainty = uncertainty * (data_range * 0.1)
             
@@ -426,8 +323,6 @@ class ThermalDataLoader:
         
         except Exception as e:
             logger.error(f"    ✗ RBF interpolation failed: {e}")
-            import traceback
-            traceback.print_exc()
             return None, None
     
     def calculate_borehole_density_confidence(self, borehole_gdf):
@@ -454,62 +349,25 @@ class ThermalDataLoader:
         return density_confidence.astype(np.float32)
     
     def combine_confidence_layers(self, interpolation_error, density_confidence):
-        """
-        Combine interpolation error and borehole density into single confidence layer
-        
-        Confidence = sqrt((1 - error_normalized) × density_confidence)
-        
-        Args:
-            interpolation_error: Interpolation uncertainty surface
-            density_confidence: Borehole density confidence (0-1)
-        
-        Returns:
-            Combined confidence layer (0-1)
-        """
-        # Normalize interpolation error to 0-1
+        """Combine interpolation error and borehole density"""
         error_norm = np.clip(interpolation_error / np.percentile(interpolation_error[interpolation_error > 0], 95), 0, 1)
         interpolation_confidence = 1.0 - error_norm
         
-        # Combine: geometric mean
         combined = np.sqrt(interpolation_confidence * density_confidence)
         
         return combined.astype(np.float32)
     
     def calculate_temperature_from_depth(self, depth_surface_m):
-        """
-        Calculate temperature from depth using heat flow-derived geothermal gradient
-        
-        FALLBACK ONLY - when GeoTIS data is unavailable
-        
-        Formula: T(z) = T_surface + (z_km × gradient)
-        
-        Args:
-            depth_surface_m: 2D array of depths in meters (negative = below sea level)
-        
-        Returns:
-            Temperature surface in °C
-        """
-        # Convert depth from meters to kilometers
+        """Calculate temperature from depth using geothermal gradient"""
         depth_km = np.abs(depth_surface_m) / 1000.0
-        
-        # Calculate temperature
         temperature = self.T_SURFACE + (depth_km * self.GEOTHERMAL_GRADIENT)
         
         return temperature.astype(np.float32)
     
-    def interpolate_temperature_grid_hybrid(self, mean_depth_surface, borehole_gdf):
+    def interpolate_temperature_grid_hybrid_debug(self, mean_depth_surface, borehole_gdf, horizon_name):
         """
-        Interpolate temperature using HYBRID approach:
-        - Use GeoTIS where available
-        - Fallback to heat flow gradient where GeoTIS is missing
-        - RBF smooth across entire basin
-        
-        Args:
-            mean_depth_surface: 2D array of mean depths (m, negative = below sea level)
-            borehole_gdf: GeoDataFrame with borehole locations
-        
-        Returns:
-            Interpolated temperature grid
+        Interpolate temperature using HYBRID approach with DEBUG OUTPUT
+        Shows first 20 boreholes: Teufe → Thickness → Mean Depth → GeoTIS Temperature
         """
         logger.info(f"    Interpolating temperature (HYBRID: GeoTIS + gradient fallback)...")
         
@@ -522,37 +380,60 @@ class ThermalDataLoader:
         y_grid = np.linspace(bottom, top, self.grid_size[1])
         X_mesh, Y_mesh = np.meshgrid(x_grid, y_grid)
         
-        # Initialize temperature array
         temperature_at_boreholes = np.full(len(borehole_gdf), np.nan, dtype=np.float32)
         geotis_available = np.zeros(len(borehole_gdf), dtype=bool)
         
-        # Try to get GeoTIS temperatures at borehole locations
-        if self.geoTIS_data:
-            logger.info(f"      Querying GeoTIS at {len(borehole_gdf)} borehole locations...")
+        # =====================================================================
+        # DEBUG OUTPUT: First 20 boreholes
+        # =====================================================================
+        logger.info(f"\n      DEBUG: First 20 boreholes (Teufe → Thick → Mean Depth → T_GeoTIS):")
+        logger.info(f"      {'#':>3} {'Teufe':>7} {'Thick':>7} {'Mean_Depth':>12} {'T_GeoTIS':>10} {'Status'}")
+        logger.info(f"      {'-'*60}")
+        
+        for idx, (i, row) in enumerate(borehole_gdf.iterrows()):
+            teufe = row['Teufe']
+            gesamtmaec = row['Gesamtmaec']
+            target_depth = row['mean_depth']
             
-            for idx, (i, row) in enumerate(borehole_gdf.iterrows()):
-                target_depth = row['mean_depth']
+            try:
+                result = self.interpolate_temperature_at_depth(target_depth, method='linear')
                 
-                try:
-                    result = self.interpolate_temperature_at_depth(target_depth, method='linear')
+                if result is not None:
+                    X_temp, Y_temp, T_temp, STDV_temp = result
                     
-                    if result is not None:
-                        X_temp, Y_temp, T_temp, STDV_temp = result
+                    points_temp = np.column_stack([X_temp, Y_temp])
+                    T_at_borehole = griddata(points_temp, T_temp, (row['X'], row['Y']), method='nearest')
+                    
+                    if not np.isnan(T_at_borehole):
+                        temperature_at_boreholes[idx] = T_at_borehole
+                        geotis_available[idx] = True
                         
-                        # Interpolate GeoTIS temperature to borehole location
-                        points_temp = np.column_stack([X_temp, Y_temp])
-                        T_at_borehole = griddata(points_temp, T_temp, (row['X'], row['Y']), method='nearest')
-                        
-                        if not np.isnan(T_at_borehole):
-                            temperature_at_boreholes[idx] = T_at_borehole
-                            geotis_available[idx] = True
-                
-                except Exception as e:
-                    logger.debug(f"      GeoTIS query failed at borehole {idx}: {e}")
-                    continue
+                        # Print first 20
+                        if idx < 20:
+                            logger.info(f"      {idx+1:>3} {teufe:>7.0f}m {gesamtmaec:>7.1f}m {target_depth:>12.0f}m {T_at_borehole:>10.1f}°C ✓")
             
-            geotis_count = np.sum(geotis_available)
-            logger.info(f"      GeoTIS temperatures found: {geotis_count}/{len(borehole_gdf)} boreholes")
+            except Exception as e:
+                if idx < 20:
+                    logger.info(f"      {idx+1:>3} {teufe:>7.0f}m {gesamtmaec:>7.1f}m {target_depth:>12.0f}m {'N/A':>10} ✗ ({str(e)[:20]})")
+                continue
+        
+        logger.info(f"      {'-'*60}")
+        
+        # =====================================================================
+        # Statistics
+        # =====================================================================
+        geotis_count = np.sum(geotis_available)
+        logger.info(f"      GeoTIS temperatures found: {geotis_count}/{len(borehole_gdf)} boreholes")
+        
+        # Check for data quality issues
+        if geotis_count > 0:
+            temps_with_geotis = temperature_at_boreholes[geotis_available]
+            logger.info(f"      Temperature stats (GeoTIS):")
+            logger.info(f"        Min: {temps_with_geotis.min():.1f}°C")
+            logger.info(f"        Max: {temps_with_geotis.max():.1f}°C")
+            logger.info(f"        Mean: {temps_with_geotis.mean():.1f}°C")
+            logger.info(f"        Median: {np.median(temps_with_geotis):.1f}°C")
+            logger.info(f"        Std Dev: {temps_with_geotis.std():.1f}°C")
         
         # Fallback: use heat flow gradient where GeoTIS is missing
         gradient_temps = self.calculate_temperature_from_depth(borehole_gdf['mean_depth'].values)
@@ -564,7 +445,6 @@ class ThermalDataLoader:
             gradient_temps
         )
         
-        # Add to dataframe for RBF
         borehole_gdf['temperature_blended'] = temp_blended
         
         # RBF interpolate blended temperatures
@@ -574,11 +454,10 @@ class ThermalDataLoader:
         y_pts = borehole_gdf['Y'].values
         z_pts = temp_blended
         
-        # Remove NaN values
         valid_mask = ~np.isnan(z_pts)
         if np.sum(valid_mask) < 3:
             logger.warning(f"      ⚠ Less than 3 valid temperature points")
-            return gradient_temps.reshape(self.grid_size[1], self.grid_size[0])
+            return gradient_temps.reshape(self.grid_size[1], self.grid_size[0]), geotis_available
         
         x_pts_valid = x_pts[valid_mask]
         y_pts_valid = y_pts[valid_mask]
@@ -608,7 +487,6 @@ class ThermalDataLoader:
         """Save raster to GeoTIFF and NumPy"""
         transform = self.create_transform_and_bounds()
         
-        # GeoTIFF
         tif_path = self.output_dir / f"{name}.tif"
         with rasterio.open(
             tif_path, 'w',
@@ -623,7 +501,6 @@ class ThermalDataLoader:
         ) as dst:
             dst.write(raster, 1)
         
-        # NumPy
         npy_path = self.output_dir / f"{name}.npy"
         np.save(npy_path, raster)
         
@@ -632,11 +509,10 @@ class ThermalDataLoader:
     def process_tier1_horizon(self, horizon_name):
         """Process single Tier 1 horizon with borehole data"""
         logger.info(f"\n{'='*80}")
-        logger.info(f"Processing: {horizon_name} (TIER 1 - Borehole-based HYBRID)")
+        logger.info(f"Processing: {horizon_name} (TIER 1 - Borehole-based HYBRID with DEBUG)")
         logger.info(f"{'='*80}")
         
         try:
-            # Load borehole data
             logger.info(f"\n1. Loading borehole data...")
             borehole_gdf = self.load_belegpunkte_data(horizon_name)
             
@@ -651,66 +527,61 @@ class ThermalDataLoader:
                 logger.error(f"✗ Required columns not found")
                 return None
             
-            logger.info(f"  Using: depth='{depth_col}', thickness='{thick_col}'")
+            logger.info(f"  ✓ Loaded: {len(borehole_gdf)} total records")
             
-            # Separate boreholes from outcrops
             borehole_records = borehole_gdf[(borehole_gdf[depth_col].notna()) & (borehole_gdf[depth_col] > 0)]
             outcrop_records = borehole_gdf[(borehole_gdf[depth_col].isna()) | (borehole_gdf[depth_col] <= 0)]
             
-            logger.info(f"  Valid boreholes (Teufe > 0): {len(borehole_records)}/{len(borehole_gdf)}")
-            logger.info(f"  Outcrop records (Teufe ≤ 0): {len(outcrop_records)}/{len(borehole_gdf)}")
+            logger.info(f"  Valid boreholes (Teufe > 0): {len(borehole_records)}")
+            logger.info(f"  Outcrop records (Teufe ≤ 0): {len(outcrop_records)}")
             
             if len(borehole_records) < 3:
-                logger.error(f"✗ Not enough borehole data ({len(borehole_records)} < 3)")
+                logger.error(f"✗ Not enough borehole data")
                 return None
             
-            # Use only boreholes for interpolation
             borehole_gdf = borehole_records.copy()
             
-            # RBF interpolate depth surface
-            logger.info(f"\n2. RBF interpolating depth surface (Teufe)...")
+            logger.info(f"\n2. RBF interpolating depth surface...")
             depth_surface, depth_unc = self.rbf_interpolate_surface(borehole_gdf, depth_col, function='thin_plate')
             
             if depth_surface is None:
-                logger.error(f"✗ Interpolation failed")
                 return None
             
-            # RBF interpolate thickness surface
-            logger.info(f"\n3. RBF interpolating thickness surface (Gesamtmaec)...")
+            logger.info(f"3. RBF interpolating thickness surface...")
             thickness_surface, thick_unc = self.rbf_interpolate_surface(borehole_gdf, thick_col, function='thin_plate')
             
             if thickness_surface is None:
-                logger.error(f"✗ Interpolation failed")
                 return None
             
-            # Calculate mean depth
-            logger.info(f"\n4. Calculating mean depth (converting to GeoTIS coordinate system)...")
+            logger.info(f"\n4. Calculating mean depth...")
             mean_depth = -depth_surface + (thickness_surface / 2)
             
-            logger.info(f"  Depth range (original boreholes, positive): [0, {depth_surface.max():.0f}] m")
-            logger.info(f"  Depth range (GeoTIS system, negative): [{mean_depth.min():.0f}, {mean_depth.max():.0f}] m")
-            logger.info(f"  Thickness range: [{thickness_surface.min():.0f}, {thickness_surface.max():.0f}] m")
+            logger.info(f"  Depth (boreholes, m): {depth_surface.min():.0f} to {depth_surface.max():.0f}")
+            logger.info(f"  Thickness (boreholes, m): {thickness_surface.min():.0f} to {thickness_surface.max():.0f}")
+            logger.info(f"  Mean depth (GeoTIS, m): {mean_depth.min():.0f} to {mean_depth.max():.0f}")
             
-            # Add mean depth to borehole dataframe for temperature query
+            # ✅ ADD BOREHOLE-LEVEL DEBUG
             borehole_gdf['mean_depth'] = -borehole_gdf['Teufe'] + (borehole_gdf['Gesamtmaec'] / 2)
             
-            # Interpolate temperature using HYBRID approach
-            logger.info(f"\n5. Interpolating temperature (HYBRID approach)...")
-            temperature_surface, geotis_mask = self.interpolate_temperature_grid_hybrid(mean_depth, borehole_gdf)
+            logger.info(f"\n  BOREHOLE DATA CHECK (first 10):")
+            logger.info(f"  {'#':>3} {'Teufe':>7} {'Gesamtmaec':>12} {'Mean_Depth':>12}")
+            logger.info(f"  {'-'*40}")
+            for idx in range(min(10, len(borehole_gdf))):
+                row = borehole_gdf.iloc[idx]
+                logger.info(f"  {idx+1:>3} {row['Teufe']:>7.0f}m {row['Gesamtmaec']:>12.1f}m {row['mean_depth']:>12.0f}m")
+            logger.info(f"  {'-'*40}")
+            
+            logger.info(f"\n5. Interpolating temperature (HYBRID with DEBUG)...")
+            temperature_surface, geotis_mask = self.interpolate_temperature_grid_hybrid_debug(mean_depth, borehole_gdf, horizon_name)
             
             logger.info(f"  Temperature range: [{temperature_surface.min():.1f}, {temperature_surface.max():.1f}]°C")
             
-            # Calculate confidence layers
             logger.info(f"\n6. Calculating confidence layers...")
             
             combined_unc = np.sqrt(depth_unc**2 + thick_unc**2)
             density_conf = self.calculate_borehole_density_confidence(borehole_gdf)
             confidence = self.combine_confidence_layers(combined_unc, density_conf)
             
-            logger.info(f"  Confidence range: [{confidence.min():.2f}, {confidence.max():.2f}]")
-            logger.info(f"  Mean confidence: {confidence.mean():.2f}")
-            
-            # Standard deviation estimate
             temp_stdv = (thick_unc + depth_unc) * self.GEOTHERMAL_GRADIENT / 1000.0
             
             logger.info(f"\n7. Saving evidence layers...")
@@ -721,45 +592,23 @@ class ThermalDataLoader:
             self.save_raster(confidence, f"{horizon_name}_confidence")
             self.save_raster(temp_stdv, f"{horizon_name}_temperature_stdv")
             
-            # Geothermal gradient (constant)
             gradient_surface = np.full_like(temperature_surface, self.GEOTHERMAL_GRADIENT)
             self.save_raster(gradient_surface, f"{horizon_name}_geothermal_gradient")
             
-            # Metadata
             metadata = {
                 'horizon': horizon_name,
                 'tier': 1,
-                'data_type': 'borehole_interpolated_rbf_hybrid',
-                'interpolation_method': 'RBF (Radial Basis Function) - Thin Plate',
-                'temperature_source': 'HYBRID: GeoTIS (primary) + Heat Flow Gradient (fallback)',
-                'geotis_available': int(np.sum(geotis_mask)) if geotis_mask is not None else 0,
-                'gradient_fallback': int(len(borehole_gdf) - np.sum(geotis_mask)) if geotis_mask is not None else len(borehole_gdf),
-                'heat_flow_database': 'GFZ German Heat Flow Database 2022 (fallback)',
-                'heat_flow_mean_mW_m2': self.HEAT_FLOW_MEAN,
-                'thermal_conductivity_W_mK': (self.THERMAL_CONDUCTIVITY_LOW + self.THERMAL_CONDUCTIVITY_HIGH) / 2.0,
-                'geothermal_gradient_C_km': float(self.GEOTHERMAL_GRADIENT),
-                'surface_temperature_C': float(self.T_SURFACE),
                 'boreholes_used': len(borehole_gdf),
-                'boreholes_excluded_outcrop': len(outcrop_records),
-                'depth_range_m': [float(depth_surface.min()), float(depth_surface.max())],
-                'thickness_range_m': [float(thickness_surface.min()), float(thickness_surface.max())],
-                'mean_depth_m': float(np.nanmean(mean_depth)),
-                'mean_depth_range_m': [float(np.nanmin(mean_depth)), float(np.nanmax(mean_depth))],
+                'outcrops_excluded': len(outcrop_records),
                 'temperature_range_C': [float(temperature_surface.min()), float(temperature_surface.max())],
                 'mean_temperature_C': float(temperature_surface.mean()),
-                'confidence_range': [float(confidence.min()), float(confidence.max())],
-                'mean_confidence': float(confidence.mean()),
-                'coordinate_system': 'GeoTIS (- below sea level, + above)',
-                'notes': 'HYBRID RBF layers: GeoTIS temperatures where available, heat flow gradient elsewhere - full spatial coverage'
             }
             
             metadata_file = self.output_dir / f"{horizon_name}_metadata.json"
             with open(metadata_file, 'w') as f:
                 json.dump(metadata, f, indent=2)
             
-            logger.info(f"\n✓ {horizon_name} completed successfully!")
-            logger.info(f"  Coverage: Full basin (RBF ensures no gaps)")
-            logger.info(f"  Temperature sources: GeoTIS {metadata['geotis_available']}/{len(borehole_gdf)} + gradient {metadata['gradient_fallback']}/{len(borehole_gdf)}")
+            logger.info(f"\n✓ {horizon_name} completed!")
             
             return metadata
         
@@ -772,14 +621,13 @@ class ThermalDataLoader:
     def process_tier1(self):
         """Process all Tier 1 horizons"""
         logger.info("\n" + "="*80)
-        logger.info("TIER 1: THERMAL EVIDENCE LAYERS (Borehole-based HYBRID)")
+        logger.info("TIER 1: DEBUG MODE - SHOWING BOREHOLE DATA")
         logger.info("="*80)
         
-        # Load GeoTIS once
         try:
             self.load_geoTIS_temperature_data()
         except Exception as e:
-            logger.warning(f"⚠ Failed to load GeoTIS (will use gradient fallback): {e}")
+            logger.warning(f"⚠ Failed to load GeoTIS: {e}")
         
         results = {}
         
@@ -787,25 +635,6 @@ class ThermalDataLoader:
             metadata = self.process_tier1_horizon(horizon)
             if metadata:
                 results[horizon] = metadata
-        
-        # Summary
-        logger.info("\n" + "="*80)
-        logger.info(f"TIER 1 SUMMARY: {len(results)}/{len(self.TIER1_HORIZONS)} horizons processed")
-        logger.info("="*80)
-        
-        for horizon, meta in sorted(results.items()):
-            logger.info(f"\n{horizon}:")
-            logger.info(f"  Boreholes used: {meta['boreholes_used']}")
-            logger.info(f"  Outcrops excluded: {meta['boreholes_excluded_outcrop']}")
-            logger.info(f"  Method: {meta['interpolation_method']}")
-            logger.info(f"  Temperature source: {meta['temperature_source']}")
-            logger.info(f"    - GeoTIS: {meta['geotis_available']} boreholes")
-            logger.info(f"    - Gradient fallback: {meta['gradient_fallback']} boreholes")
-            logger.info(f"  Depth range (boreholes): {meta['depth_range_m'][0]:.0f}-{meta['depth_range_m'][1]:.0f} m")
-            logger.info(f"  Mean depth (GeoTIS system): {meta['mean_depth_range_m'][0]:.0f} to {meta['mean_depth_range_m'][1]:.0f} m")
-            logger.info(f"  Temperature: {meta['mean_temperature_C']:.1f}°C (range: {meta['temperature_range_C'][0]:.1f}-{meta['temperature_range_C'][1]:.1f})")
-            logger.info(f"  Confidence: {meta['mean_confidence']:.2f}")
-            logger.info(f"  Coverage: Full basin (no gaps)")
         
         return results
 
@@ -817,11 +646,10 @@ def main():
         format='%(levelname)s:%(name)s: %(message)s'
     )
     
-    logger.info("\n✓ HYBRID Temperature Approach:")
-    logger.info("  1. Primary: GeoTIS measured temperatures (where available)")
-    logger.info("  2. Fallback: Heat flow-derived geothermal gradient (where GeoTIS missing)")
-    logger.info("  3. RBF smooth across entire basin")
-    logger.info("  Advantages: Best of both worlds - real data + complete coverage\n")
+    logger.info("\n" + "="*80)
+    logger.info("TIER 1 - DEBUG MODE")
+    logger.info("Showing borehole data: Teufe → Thickness → Mean Depth → GeoTIS Temperature")
+    logger.info("="*80 + "\n")
     
     loader = ThermalDataLoader(
         config_path="data/inputs/metadata.json",
@@ -829,22 +657,11 @@ def main():
         geoTIS_dir="data/inputs/geoTIS/temperature"
     )
     
-    # Process Tier 1
     results = loader.process_tier1()
     
     logger.info("\n" + "="*80)
-    logger.info("✓ THERMAL EVIDENCE LAYER GENERATION COMPLETE")
+    logger.info("✓ DEBUG OUTPUT COMPLETE")
     logger.info("="*80)
-    logger.info(f"\nOutput directory: {loader.output_dir}")
-    logger.info("\nEvidence layers ready for Tier 2 (TUNB synthesis):")
-    logger.info("  - *_depth_surface.tif/.npy (RBF interpolated)")
-    logger.info("  - *_thickness_surface.tif/.npy (RBF interpolated)")
-    logger.info("  - *_temperature_surface.tif/.npy (HYBRID: GeoTIS + gradient)")
-    logger.info("  - *_geothermal_gradient.tif/.npy (constant: 23.1°C/km)")
-    logger.info("  - *_confidence.tif/.npy (borehole density + interpolation error)")
-    logger.info("  - *_temperature_stdv.tif/.npy (uncertainty estimate)")
-    logger.info("  - *_metadata.json (complete provenance + data sources)")
-    logger.info("\nNext: Process Tier 2 (TUNB surfaces + GeoTIS deep temperatures)")
 
 
 if __name__ == "__main__":
