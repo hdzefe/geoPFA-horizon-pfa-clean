@@ -312,3 +312,21 @@ class ThermalDataLoader:
         logger.info(f"      Data sources: {geotis_count} GeoTIS (spatially filtered), {len(borehole_gdf_filtered) - geotis_count} gradient-derived")
         
         return temperature_grid.astype(np.float32), geotis_available
+
+
+def main():
+    """Main execution"""
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(levelname)s:%(name)s: %(message)s'
+    )
+    
+    loader = ThermalDataLoader(
+        config_path="data/inputs/metadata.json",
+        base_dir="data/inputs",
+        geoTIS_dir="data/inputs/geotIS/temperature_basin_filtered"
+    )
+
+
+if __name__ == "__main__":
+    main()
