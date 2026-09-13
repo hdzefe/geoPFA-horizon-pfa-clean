@@ -1,11 +1,185 @@
-    def interpolate_temperature_grid_hybrid(self, horizon_name, mean_depths_df, borehole_gdf_shp):
+"""
+Thermal Data Loader for geoPFA
+Loads pre-calculated borehole mean depths with X,Y coordinates from CSV, queries GeoTIS, and interpolates temperature grids
+"""
+
+import json
+import logging
+import numpy as np
+import pandas as pd
+from scipy.interpolate import griddata, Rbf
+from pathlib import Path
+import warnings
+
+warnings.filterwarnings('ignore')
+
+logger = logging.getLogger(__name__)
+
+
+class ThermalDataLoader:
+    """Load and process thermal data for PFA analysis"""
+    
+    def __init__(self, config_path, base_dir="data/inputs", geoTIS_dir="data/inputs/geotIS/temperature_basin_filtered"):
+        """Initialize thermal data loader"""
+        self.base_dir = Path(base_dir)
+        self.geoTIS_dir = Path(geoTIS_dir)
+        
+        # Load configuration
+        with open(config_path) as f:
+            self.config = json.load(f)
+        
+        self.crs = self.config['crs']
+        self.grid_size = self.config['grid_size']
+        self.extent = self.config['extent']
+        
+        # Temperature physical limits
+        self.T_MIN = 3.0
+        self.T_MAX = 200.0
+        
+        # Heat flow gradient for fallback
+        self.geothermal_gradient = 23.1
+        self.surface_temp = 10.0
+        
+        # GeoTIS data storage
+        self.geoTIS_data = {}
+        
+        # Load GeoTIS temperature data
+        self.load_geoTIS_temperature_data()
+        
+        logger.info(f"✓ ThermalDataLoader initialized")
+        logger.info(f"  CRS: {self.crs}")
+        logger.info(f"  Grid size: {self.grid_size}")
+
+    def load_geoTIS_temperature_data(self):
+        """Load GeoTIS temperature data from basin-filtered files"""
+        logger.info("\n" + "="*80)
+        logger.info("LOADING GEOТIS TEMPERATURE DATA (NORTH GERMAN BASIN FILTERED)")
+        logger.info("="*80)
+        
+        if not self.geoTIS_dir.exists():
+            logger.warning(f"⚠ GeoTIS directory not found: {self.geoTIS_dir}")
+            return
+        
+        # Find all .data files
+        data_files = sorted(self.geoTIS_dir.glob("*.data"))
+        logger.info(f"✓ Found {len(data_files)} temperature depth files")
+        
+        # Extract depth levels from filenames
+        depths = []
+        for f in data_files:
+            parts = f.stem.split('_')
+            try:
+                depth_str = parts[-1]
+                depth = int(depth_str)
+                depths.append(depth)
+                
+                # Load data
+                df = pd.read_csv(f, delimiter=';')
+                if len(df) > 0:
+                    self.geoTIS_data[depth] = {
+                        'X': df.iloc[:, 0].values,
+                        'Y': df.iloc[:, 1].values,
+                        'T': pd.to_numeric(df.iloc[:, 2], errors='coerce').values,
+                    }
+            except Exception as e:
+                continue
+        
+        depths = sorted(self.geoTIS_data.keys())
+        logger.info(f"✓ Loaded {len(depths)} depth levels")
+        if depths:
+            logger.info(f"  Depth range: {depths[0]}m to {depths[-1]}m")
+
+    def load_mean_depths_table(self):
+        """Load pre-calculated mean depths with X,Y coordinates from CSV"""
+        table_path = self.base_dir / "borehole_mean_depths.csv"
+        
+        logger.info(f"\n✓ Loading pre-calculated mean depths from: {table_path}")
+        
+        if not table_path.exists():
+            logger.error(f"✗ Mean depths table not found: {table_path}")
+            return None
+        
+        try:
+            # Try reading with different delimiters
+            for delimiter in [',', ';', '\t', ' ']:
+                try:
+                    df = pd.read_csv(table_path, delimiter=delimiter)
+                    
+                    # Check if columns parsed correctly
+                    if 'borehole_name' in df.columns and 'x' in df.columns.str.lower() and 'y' in df.columns.str.lower():
+                        logger.info(f"✓ Loaded {len(df)} boreholes (delimiter: '{delimiter}')")
+                        logger.info(f"  Columns: {list(df.columns)}")
+                        return df
+                except:
+                    continue
+            
+            logger.error(f"✗ Could not parse CSV with any standard delimiter")
+            return None
+            
+        except Exception as e:
+            logger.error(f"✗ Error loading mean depths table: {e}")
+            return None
+
+    def calculate_temperature_from_depth(self, depths_m):
+        """Calculate temperature using geothermal gradient"""
+        abs_depths = np.abs(depths_m)
+        temps = self.surface_temp + (abs_depths / 1000.0) * self.geothermal_gradient
+        return np.clip(temps, self.T_MIN, self.T_MAX)
+
+    def interpolate_temperature_at_depth(self, target_depth, method='linear'):
+        """Interpolate temperature at a specific depth using GeoTIS data"""
+        if not self.geoTIS_data:
+            return None
+        
+        depths = sorted(self.geoTIS_data.keys())
+        
+        # Clamp to available depth range
+        if target_depth < depths[0]:
+            target_depth = depths[0]
+        elif target_depth > depths[-1]:
+            target_depth = depths[-1]
+        
+        # Find bracketing depths
+        if target_depth in self.geoTIS_data:
+            data = self.geoTIS_data[target_depth]
+            X, Y, T = data['X'], data['Y'], data['T']
+        else:
+            upper_depth = min([d for d in depths if d >= target_depth], default=depths[-1])
+            lower_depth = max([d for d in depths if d <= target_depth], default=depths[0])
+            
+            if upper_depth == lower_depth:
+                data = self.geoTIS_data[upper_depth]
+                X, Y, T = data['X'], data['Y'], data['T']
+            else:
+                data_lower = self.geoTIS_data[lower_depth]
+                data_upper = self.geoTIS_data[upper_depth]
+                
+                weight = (target_depth - lower_depth) / (upper_depth - lower_depth)
+                
+                X = data_lower['X']
+                Y = data_lower['Y']
+                T = data_lower['T'] * (1 - weight) + data_upper['T'] * weight
+        
+        # Remove invalid temperatures
+        mask = (T > -99999) & (~np.isnan(T))
+        X = X[mask]
+        Y = Y[mask]
+        T = T[mask]
+        
+        if len(T) == 0:
+            return None
+        
+        STDV = np.std(T)
+        
+        return X, Y, T, STDV
+
+    def interpolate_temperature_grid_hybrid(self, horizon_name, mean_depths_df):
         """
-        Interpolate temperature using HYBRID approach with pre-calculated mean depths
+        Interpolate temperature using HYBRID approach with pre-calculated mean depths and X,Y from CSV
         
         Args:
             horizon_name: Horizon name (het1, het2, sin1, sin2, pli1, pli2)
-            mean_depths_df: DataFrame with pre-calculated mean depths
-            borehole_gdf_shp: GeoDataFrame from shapefile (for X, Y coordinates)
+            mean_depths_df: DataFrame with pre-calculated mean depths, X, Y coordinates
         
         Returns:
             Tuple (temperature_grid, geotis_count)
@@ -24,31 +198,18 @@
         
         depth_col = depth_column_map[horizon_name]
         
-        # Merge mean depths with borehole shapefile coordinates
-        borehole_gdf_shp = borehole_gdf_shp.copy()
-        borehole_gdf_shp['borehole_name'] = borehole_gdf_shp.iloc[:, 0].astype(str)  # Convert to string
-        borehole_gdf_shp['X'] = borehole_gdf_shp.geometry.x
-        borehole_gdf_shp['Y'] = borehole_gdf_shp.geometry.y
-        
-        # Ensure CSV borehole_name is also string
-        mean_depths_df_copy = mean_depths_df.copy()
-        mean_depths_df_copy['borehole_name'] = mean_depths_df_copy['borehole_name'].astype(str)
-        
-        # Merge on borehole name
-        merged = borehole_gdf_shp.merge(
-            mean_depths_df_copy[['borehole_name', depth_col]],
-            on='borehole_name',
-            how='left'
-        )
+        # Normalize column names (lowercase for X, Y)
+        df_copy = mean_depths_df.copy()
+        df_copy.columns = df_copy.columns.str.lower()
         
         # Filter: exclude 0 values and invalid records
-        merged_valid = merged[
-            (merged[depth_col] != 0) & 
-            (merged[depth_col].notna()) &
-            (merged[depth_col] < 0)  # Negative depths only (below surface)
+        merged_valid = df_copy[
+            (df_copy[depth_col] != 0) & 
+            (df_copy[depth_col].notna()) &
+            (df_copy[depth_col] < 0)  # Negative depths only (below surface)
         ].copy()
         
-        logger.info(f"      ✓ Filtered to {len(merged_valid)}/{len(borehole_gdf_shp)} boreholes with valid mean depths (excluding 0 values)")
+        logger.info(f"      ✓ Filtered to {len(merged_valid)}/{len(df_copy)} boreholes with valid mean depths (excluding 0 values)")
         
         if len(merged_valid) < 3:
             logger.warning(f"      ⚠ Less than 3 valid boreholes")
@@ -81,7 +242,7 @@
                         
                         if len(X_temp) > 0:
                             points_temp = np.column_stack([X_temp, Y_temp])
-                            T_at_borehole = griddata(points_temp, T_temp, (row['X'], row['Y']), method='nearest')
+                            T_at_borehole = griddata(points_temp, T_temp, (row['x'], row['y']), method='nearest')
                             
                             if not np.isnan(T_at_borehole):
                                 temperature_at_boreholes[idx] = T_at_borehole
@@ -108,8 +269,8 @@
         # RBF interpolate blended temperatures
         logger.info(f"      RBF interpolating blended temperatures across basin...")
         
-        x_pts = merged_valid['X'].values
-        y_pts = merged_valid['Y'].values
+        x_pts = merged_valid['x'].values
+        y_pts = merged_valid['y'].values
         z_pts = temp_blended
         
         valid_mask = ~np.isnan(z_pts)
@@ -132,3 +293,68 @@
         logger.info(f"      ✓ Temperature range: [{temperature_grid.min():.1f}, {temperature_grid.max():.1f}]°C")
         
         return temperature_grid.astype(np.float32), geotis_count
+
+
+def main():
+    """Main execution - process all 6 horizons using pre-calculated mean depths from CSV"""
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(levelname)s:%(name)s: %(message)s'
+    )
+    
+    loader = ThermalDataLoader(
+        config_path="data/inputs/metadata.json",
+        base_dir="data/inputs",
+        geoTIS_dir="data/inputs/geotIS/temperature_basin_filtered"
+    )
+    
+    # Load pre-calculated mean depths with X, Y coordinates
+    mean_depths_df = loader.load_mean_depths_table()
+    if mean_depths_df is None:
+        logger.error("✗ Cannot proceed without mean depths table")
+        return
+    
+    logger.info("\n" + "="*80)
+    logger.info("THERMAL EVIDENCE LAYERS (Using Pre-calculated Mean Depths + X,Y from CSV)")
+    logger.info("="*80)
+    
+    horizons = {
+        'het1': 'Hettangian 1',
+        'het2': 'Hettangian 2',
+        'sin1': 'Sinemurian 1',
+        'sin2': 'Sinemurian 2',
+        'pli1': 'Pliensbachian 1',
+        'pli2': 'Pliensbachian 2',
+    }
+    
+    for horizon_short, horizon_long in horizons.items():
+        logger.info("\n" + "="*80)
+        logger.info(f"Processing: {horizon_short.upper()} ({horizon_long})")
+        logger.info("="*80)
+        
+        try:
+            # Interpolate temperature using pre-calculated mean depths
+            logger.info(f"\n1. Interpolating temperature...")
+            temp_grid, geotis_count = loader.interpolate_temperature_grid_hybrid(
+                horizon_short, 
+                mean_depths_df
+            )
+            
+            if temp_grid is not None:
+                logger.info(f"\n✓ {horizon_short.upper()} completed successfully!")
+                logger.info(f"   Temperature range: {temp_grid.min():.1f}°C to {temp_grid.max():.1f}°C")
+                logger.info(f"   Data sources: {geotis_count} GeoTIS (basin filtered), others from gradient")
+            else:
+                logger.warning(f"⚠ Could not generate temperature grid for {horizon_short.upper()}")
+            
+        except Exception as e:
+            logger.error(f"✗ Error processing {horizon_short.upper()}: {e}", exc_info=True)
+            continue
+    
+    logger.info("\n" + "="*80)
+    logger.info("✓ THERMAL EVIDENCE LAYER GENERATION COMPLETE")
+    logger.info("="*80)
+
+
+if __name__ == "__main__":
+    main()
