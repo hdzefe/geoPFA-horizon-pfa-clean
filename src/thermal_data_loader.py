@@ -27,8 +27,9 @@
         df_copy = mean_depths_df.copy()
         df_copy.columns = df_copy.columns.str.lower()
         
-        # Convert depth column to numeric
+        # Convert depth column to numeric and make negative (below surface)
         df_copy[depth_col] = pd.to_numeric(df_copy[depth_col], errors='coerce')
+        df_copy[depth_col] = -np.abs(df_copy[depth_col])  # Ensure negative values
         
         # Filter: exclude 0 values and invalid records
         merged_valid = df_copy[
