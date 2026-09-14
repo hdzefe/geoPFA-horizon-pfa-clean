@@ -1,7 +1,13 @@
 """
 Thermal Data Loader for geoPFA
-Loads pre-calculated borehole mean depths with X,Y coordinates from CSV, queries GeoTIS, and interpolates temperature grids
-Exports evidence layers as GeoTIFFs
+Loads pre-calculated borehole mean depths with X,Y coordinates from CSV, queries GeoTIS, 
+and interpolates temperature grids.
+Exports temperature_evidence layers as GeoTIFFs per horizon.
+
+RESERVOIR-SPECIFIC PFA APPROACH:
+- 6 horizons with borehole data: het1, het2, sin1, sin2, pli1, pli2
+- Output: {horizon}_temperature_evidence.tif (interpolated from borehole depths + GeoTIS)
+- Temperature is DIRECT EVIDENCE of geothermal favorability (hard data from boreholes)
 """
 
 import json
@@ -20,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 
 class ThermalDataLoader:
-    """Load and process thermal data for PFA analysis"""
+    """Load and process thermal evidence data for PFA analysis"""
     
     def __init__(self, config_path, base_dir="data/inputs", geoTIS_dir="data/inputs/geotIS/temperature_basin_filtered"):
         """Initialize thermal data loader"""
@@ -41,9 +47,9 @@ class ThermalDataLoader:
         self.T_MIN = 3.0
         self.T_MAX = 200.0
         
-        # Heat flow gradient for fallback
-        self.geothermal_gradient = 23.1
-        self.surface_temp = 10.0
+        # Heat flow gradient for fallback (when GeoTIS unavailable)
+        self.geothermal_gradient = 23.1  # °C/km
+        self.surface_temp = 10.0  # °C
         
         # GeoTIS data storage
         self.geoTIS_data = {}
@@ -127,7 +133,7 @@ class ThermalDataLoader:
             return None
 
     def calculate_temperature_from_depth(self, depths_m):
-        """Calculate temperature using geothermal gradient"""
+        """Calculate temperature using geothermal gradient (fallback when GeoTIS unavailable)"""
         abs_depths = np.abs(depths_m)
         temps = self.surface_temp + (abs_depths / 1000.0) * self.geothermal_gradient
         return np.clip(temps, self.T_MIN, self.T_MAX)
@@ -179,16 +185,15 @@ class ThermalDataLoader:
         
         return X, Y, T, STDV
 
-    def save_temperature_geotiff(self, temperature_grid, horizon_name, layer_type='temperature'):
+    def save_temperature_geotiff(self, temperature_grid, horizon_name):
         """
-        Save temperature grid as GeoTIFF
+        Save temperature evidence grid as GeoTIFF
         
         Args:
-            temperature_grid: 2D numpy array
-            horizon_name: Horizon name (het1, het2, etc.)
-            layer_type: 'temperature', 'thickness', 'confidence'
+            temperature_grid: 2D numpy array of interpolated temperatures
+            horizon_name: Horizon name (het1, het2, sin1, sin2, pli1, pli2)
         """
-        output_path = self.output_dir / f"{horizon_name}_{layer_type}_evidence.tif"
+        output_path = self.output_dir / f"{horizon_name}_temperature_evidence.tif"
         
         left = self.extent['left']
         right = self.extent['right']
@@ -219,7 +224,10 @@ class ThermalDataLoader:
 
     def interpolate_temperature_grid_hybrid(self, horizon_name, mean_depths_df):
         """
-        Interpolate temperature using HYBRID approach with pre-calculated mean depths and X,Y from CSV
+        Interpolate temperature EVIDENCE using HYBRID approach:
+        - Direct evidence: GeoTIS temperatures at borehole mean depths
+        - Fallback: Geothermal gradient where GeoTIS unavailable
+        - Interpolation: RBF across basin
         
         Args:
             horizon_name: Horizon name (het1, het2, sin1, sin2, pli1, pli2)
@@ -228,7 +236,7 @@ class ThermalDataLoader:
         Returns:
             Tuple (temperature_grid, geotis_count)
         """
-        logger.info(f"    Interpolating temperature (HYBRID: GeoTIS + gradient fallback)...")
+        logger.info(f"    Interpolating temperature EVIDENCE (HYBRID: GeoTIS + gradient fallback)...")
         
         # Map horizon name to column name
         depth_column_map = {
@@ -344,7 +352,15 @@ class ThermalDataLoader:
 
 
 def main():
-    """Main execution - process all 6 horizons using pre-calculated mean depths from CSV"""
+    """
+    Main execution - Process 6 horizons with borehole data
+    
+    RESERVOIR-SPECIFIC PFA APPROACH:
+    - Input: Pre-calculated mean depths (top + thickness/2) with X,Y from CSV
+    - Query: GeoTIS temperatures at those mean depths (DIRECT EVIDENCE)
+    - Fallback: Geothermal gradient where GeoTIS unavailable
+    - Output: {horizon}_temperature_evidence.tif per horizon
+    """
     logging.basicConfig(
         level=logging.INFO,
         format='%(levelname)s:%(name)s: %(message)s'
@@ -381,8 +397,8 @@ def main():
         logger.info("="*80)
         
         try:
-            # Interpolate temperature using pre-calculated mean depths
-            logger.info(f"\n1. Interpolating temperature...")
+            # Interpolate temperature evidence
+            logger.info(f"\n1. Interpolating temperature evidence...")
             temp_grid, geotis_count = loader.interpolate_temperature_grid_hybrid(
                 horizon_short, 
                 mean_depths_df
@@ -390,14 +406,14 @@ def main():
             
             if temp_grid is not None:
                 # Export as GeoTIFF
-                logger.info(f"\n2. Exporting GeoTIFF...")
-                loader.save_temperature_geotiff(temp_grid, horizon_short, layer_type='temperature')
+                logger.info(f"\n2. Exporting temperature evidence GeoTIFF...")
+                loader.save_temperature_geotiff(temp_grid, horizon_short)
                 
                 logger.info(f"\n✓ {horizon_short.upper()} completed successfully!")
                 logger.info(f"   Temperature range: {temp_grid.min():.1f}°C to {temp_grid.max():.1f}°C")
                 logger.info(f"   Data sources: {geotis_count} GeoTIS (basin filtered), others from gradient")
             else:
-                logger.warning(f"⚠ Could not generate temperature grid for {horizon_short.upper()}")
+                logger.warning(f"⚠ Could not generate temperature evidence for {horizon_short.upper()}")
             
         except Exception as e:
             logger.error(f"✗ Error processing {horizon_short.upper()}: {e}", exc_info=True)
