@@ -43,11 +43,20 @@
             logger.info(f"    Y: {basin_ymin:,} to {basin_ymax:,}")
             
             # Convert lat/lng to GK coordinates for filtering
-            # NOTE: pyproj.Transformer expects (longitude, latitude) order!
             from pyproj import Transformer
             transformer = Transformer.from_crs("EPSG:4326", "EPSG:31467")
             
-            # Transform (lng, lat) → (x_gk, y_gk)
+            # Test with first point
+            test_lng = df_clean['lng'].iloc[0]
+            test_lat = df_clean['lat'].iloc[0]
+            logger.info(f"\n  TEST POINT (first measurement):")
+            logger.info(f"    Input (lng, lat): {test_lng:.4f}, {test_lat:.4f}")
+            
+            test_x, test_y = transformer.transform(test_lng, test_lat)
+            logger.info(f"    Transformed (X, Y): {test_x:,.0f}, {test_y:,.0f}")
+            logger.info(f"    Expected range: X ~3.3-3.9M, Y ~5.6-6.1M")
+            
+            # Transform all points
             x_gk, y_gk = transformer.transform(df_clean['lng'].values, df_clean['lat'].values)
             
             logger.info(f"\n  Heat flow data extent (converted to GK coordinates):")
@@ -87,6 +96,7 @@
                 mean_hf = q_all.mean()
                 
                 logger.warning(f"⚠ No heat flow measurements found in basin extent")
+                logger.warning(f"  Coordinate transformation may be incorrect")
                 logger.info(f"\n  Using Germany-wide average:")
                 logger.info(f"    Mean: {mean_hf:.1f} mW/m²")
                 logger.info(f"    Total measurements: {len(q_all)}")
