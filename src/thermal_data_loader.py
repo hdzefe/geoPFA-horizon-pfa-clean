@@ -8,6 +8,9 @@ RESERVOIR-SPECIFIC PFA APPROACH:
 - 6 horizons with borehole data: het1, het2, sin1, sin2, pli1, pli2
 - Output: {horizon}_temperature_evidence.tif (interpolated from borehole depths + GeoTIS)
 - Temperature is DIRECT EVIDENCE of geothermal favorability (hard data from boreholes)
+
+DEBUG MODE:
+- Exports {horizon}_borehole_temperatures_debug.csv with all borehole data used in interpolation
 """
 
 import json
@@ -222,6 +225,36 @@ class ThermalDataLoader:
             logger.error(f"  ✗ Error saving GeoTIFF: {e}")
             return None
 
+    def save_debug_borehole_csv(self, horizon_name, merged_valid, geotis_available, temperature_at_boreholes, gradient_temps, temp_blended):
+        """
+        Save debug CSV with all borehole data used in interpolation
+        
+        Args:
+            horizon_name: Horizon name
+            merged_valid: DataFrame with valid boreholes
+            geotis_available: Boolean array (True = GeoTIS data available)
+            temperature_at_boreholes: Array of GeoTIS temperatures
+            gradient_temps: Array of gradient-calculated temperatures
+            temp_blended: Final blended temperatures used for RBF
+        """
+        debug_df = pd.DataFrame({
+            'borehole_name': merged_valid['borehole_name'].values if 'borehole_name' in merged_valid.columns else range(len(merged_valid)),
+            'x': merged_valid['x'].values,
+            'y': merged_valid['y'].values,
+            'mean_depth_m': merged_valid[list(merged_valid.columns)[[i for i, c in enumerate(merged_valid.columns) if 'mean_depth' in c]][0]].values if any('mean_depth' in c for c in merged_valid.columns) else 0,
+            'geotis_available': geotis_available,
+            'geotis_temperature_C': temperature_at_boreholes,
+            'gradient_temperature_C': gradient_temps,
+            'final_blended_temperature_C': temp_blended,
+            'data_source': ['GeoTIS' if g else 'Gradient' for g in geotis_available]
+        })
+        
+        output_path = self.output_dir / f"{horizon_name}_borehole_temperatures_debug.csv"
+        debug_df.to_csv(output_path, index=False)
+        logger.info(f"  ✓ Debug CSV saved: {output_path}")
+        logger.info(f"    GeoTIS boreholes: {np.sum(geotis_available)}/{len(geotis_available)}")
+        logger.info(f"    Gradient boreholes: {len(geotis_available) - np.sum(geotis_available)}/{len(geotis_available)}")
+
     def interpolate_temperature_grid_hybrid(self, horizon_name, mean_depths_df):
         """
         Interpolate temperature EVIDENCE using HYBRID approach:
@@ -322,6 +355,17 @@ class ThermalDataLoader:
         
         merged_valid['temperature_blended'] = temp_blended
         
+        # DEBUG: Save borehole data for verification
+        logger.info(f"      Saving debug CSV with borehole temperatures...")
+        self.save_debug_borehole_csv(
+            horizon_name, 
+            merged_valid, 
+            geotis_available, 
+            temperature_at_boreholes, 
+            gradient_temps, 
+            temp_blended
+        )
+        
         # RBF interpolate blended temperatures
         logger.info(f"      RBF interpolating blended temperatures across basin...")
         
@@ -360,6 +404,7 @@ def main():
     - Query: GeoTIS temperatures at those mean depths (DIRECT EVIDENCE)
     - Fallback: Geothermal gradient where GeoTIS unavailable
     - Output: {horizon}_temperature_evidence.tif per horizon
+    - Debug: {horizon}_borehole_temperatures_debug.csv with all borehole data
     """
     logging.basicConfig(
         level=logging.INFO,
