@@ -26,6 +26,10 @@
             basin_xmin, basin_xmax = 3342763, 3921379
             basin_ymin, basin_ymax = 5650524, 6103144
             
+            logger.info(f"\n  Basin extent (GK Zone 3):")
+            logger.info(f"    X: {basin_xmin:,} to {basin_xmax:,}")
+            logger.info(f"    Y: {basin_ymin:,} to {basin_ymax:,}")
+            
             # Convert lat/lng to GK coordinates for filtering
             # NOTE: pyproj.Transformer expects (longitude, latitude) order!
             from pyproj import Transformer
@@ -34,13 +38,17 @@
             # Transform (lng, lat) → (x_gk, y_gk)
             x_gk, y_gk = transformer.transform(df_clean['lng'].values, df_clean['lat'].values)
             
+            logger.info(f"\n  Heat flow data extent (in GK coordinates):")
+            logger.info(f"    X: {x_gk.min():,.0f} to {x_gk.max():,.0f}")
+            logger.info(f"    Y: {y_gk.min():,.0f} to {y_gk.max():,.0f}")
+            
             # Filter to basin extent
             basin_mask = (x_gk >= basin_xmin) & (x_gk <= basin_xmax) & \
                         (y_gk >= basin_ymin) & (y_gk <= basin_ymax)
             
             df_basin = df_clean[basin_mask].copy()
             
-            logger.info(f"✓ Measurements in North German Basin: {len(df_basin):,} / {len(df_clean):,}")
+            logger.info(f"\n✓ Measurements in North German Basin: {len(df_basin):,} / {len(df_clean):,}")
             
             if len(df_basin) > 0:
                 q_basin = df_basin['q']
@@ -67,13 +75,19 @@
                 mean_hf = q_all.mean()
                 
                 logger.warning(f"⚠ No heat flow measurements in basin")
+                logger.warning(f"  Heat flow data extent doesn't overlap basin extent")
                 logger.info(f"\n  Using Germany-wide average:")
                 logger.info(f"    Mean: {mean_hf:.1f} mW/m²")
+                logger.info(f"    Measurements: {len(q_all)}")
                 
                 self.geothermal_gradient = (mean_hf / 1000.0) / self.thermal_conductivity * 1000.0
                 
                 logger.info(f"\n  Calculated Geothermal Gradient:")
                 logger.info(f"    {self.geothermal_gradient:.2f} °C/km (Germany-wide)")
+                
+                logger.info(f"\n  💡 To use basin-specific data:")
+                logger.info(f"    - Check if heat flow file has measurements near the basin")
+                logger.info(f"    - Or manually provide a basin gradient value")
         
         except Exception as e:
             logger.warning(f"⚠ Error loading heat flow database: {e}")
