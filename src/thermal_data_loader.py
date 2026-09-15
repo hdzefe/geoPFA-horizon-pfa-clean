@@ -12,8 +12,8 @@
             pixel_width = (x_max - x_min) / data.shape[1]
             pixel_height = (y_max - y_min) / data.shape[0]
             
-            # Top-left corner
-            transform = Affine.translation(x_min, y_max) * Affine.scale(pixel_width, -pixel_height)
+            # Bottom-left corner (y_min) with positive pixel height
+            transform = Affine.translation(x_min, y_min) * Affine.scale(pixel_width, pixel_height)
             
             logger.info(f"  Georeferencing: {x_min:.0f}-{x_max:.0f} / {y_min:.0f}-{y_max:.0f}")
         
