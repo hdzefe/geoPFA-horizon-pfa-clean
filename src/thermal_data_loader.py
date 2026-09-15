@@ -12,7 +12,7 @@
             pixel_width = (x_max - x_min) / data.shape[1]
             pixel_height = (y_max - y_min) / data.shape[0]
             
-            # Bottom-left corner (y_min) with positive pixel height
+            # Bottom-left corner (y_min) with positive pixel height for EPSG:31467
             transform = Affine.translation(x_min, y_min) * Affine.scale(pixel_width, pixel_height)
             
             logger.info(f"  Georeferencing: {x_min:.0f}-{x_max:.0f} / {y_min:.0f}-{y_max:.0f}")
@@ -27,6 +27,7 @@
             crs=self.crs,
             transform=transform
         ) as dst:
+            # Flip Y-axis for correct EPSG:31467 orientation
             dst.write(np.flipud(data.astype(rasterio.float32)), 1)
         
         logger.info(f"  ✓ Saved: {output_path}")
