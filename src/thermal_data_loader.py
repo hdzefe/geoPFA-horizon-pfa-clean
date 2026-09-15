@@ -1,17 +1,32 @@
-    def _interpolate_sparse_at_xy(self, xyz: np.ndarray, x: float, y: float, radius: float = 5000) -> float:
-        """Find nearest temperature point within radius"""
-        X = xyz[:, 0]
-        Y = xyz[:, 1]
-        T = xyz[:, 2]
+    def _export_geotiff(self, data: np.ndarray, filename: str):
+        """Export temperature grid as GeoTIFF with proper georeferencing"""
+        output_path = self.output_dir / filename
         
-        dist = np.sqrt((X - x)**2 + (Y - y)**2)
+        if self.basin_bounds is None:
+            logger.warning("  ⚠ Basin bounds not set, using identity transform")
+            transform = Affine.identity()
+        else:
+            # Map grid pixels to real coordinates
+            x_min, x_max, y_min, y_max = self.basin_bounds
+            
+            pixel_width = (x_max - x_min) / data.shape[1]
+            pixel_height = (y_max - y_min) / data.shape[0]
+            
+            # Top-left corner
+            transform = Affine.translation(x_min, y_max) * Affine.scale(pixel_width, -pixel_height)
+            
+            logger.info(f"  Georeferencing: {x_min:.0f}-{x_max:.0f} / {y_min:.0f}-{y_max:.0f}")
         
-        # Find nearest point within radius
-        valid = dist < radius
-        if not np.any(valid):
-            return np.nan
+        with rasterio.open(
+            output_path, 'w',
+            driver='GTiff',
+            height=data.shape[0],
+            width=data.shape[1],
+            count=1,
+            dtype=rasterio.float32,
+            crs=self.crs,
+            transform=transform
+        ) as dst:
+            dst.write(data.astype(rasterio.float32), 1)
         
-        nearest_idx = np.argmin(dist[valid])
-        actual_idx = np.where(valid)[0][nearest_idx]
-        
-        return float(T[actual_idx])
+        logger.info(f"  ✓ Saved: {output_path}")
