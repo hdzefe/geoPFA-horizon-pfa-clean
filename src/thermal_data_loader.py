@@ -3,7 +3,7 @@
         Get temperature from borehole if one exists near this location
         Uses geothermal gradient: T = T_surface + (depth / 1000) * gradient
         """
-        if self.boreholes_gdf is None or self.heat_flow_stats is None:
+        if self.boreholes_gdf is None:
             return np.nan
         
         # Find boreholes within radius
