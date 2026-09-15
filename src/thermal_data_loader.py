@@ -15,8 +15,8 @@ import rasterio
 from rasterio.crs import CRS
 import json
 import glob
-import xarray as xr
 from typing import Tuple
+import struct
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(levelname)s:%(name)s:%(message)s')
@@ -47,6 +47,7 @@ class ThermalDataLoader:
         # GeoTIS temperature data
         self.T_stack = {}  # depth_m -> 2D array
         self.levels_m_nhn = []  # Sorted depth levels
+        self.grid_actual_size = None
         
         # Borehole data
         self.boreholes_gdf = None
@@ -127,48 +128,62 @@ class ThermalDataLoader:
             self.geothermal_gradient = 23.1
     
     def load_geotis_temperatures(self):
-        """Load GeoTIS temperature data from NetCDF files"""
+        """Load GeoTIS temperature data from .data files (binary float32 grids)"""
         logger.info("\n" + "="*80)
         logger.info("LOADING GEOTIS TEMPERATURE DATA (BASIN FILTERED)")
         logger.info("="*80)
         
-        nc_files = sorted(glob.glob(str(self.geotis_dir / "*.nc")))
+        data_files = sorted(glob.glob(str(self.geotis_dir / "*.data")))
         
-        if not nc_files:
-            logger.error(f"❌ No NetCDF files found in {self.geotis_dir}")
+        if not data_files:
+            logger.error(f"❌ No .data files found in {self.geotis_dir}")
             return False
         
-        logger.info(f"✓ Found {len(nc_files)} temperature depth files")
+        logger.info(f"✓ Found {len(data_files)} temperature depth files")
         
         try:
-            for nc_file in nc_files:
-                ds = xr.open_dataset(nc_file)
-                
-                # Extract depth from filename (format: temperature_-5000.nc, etc.)
-                filename = Path(nc_file).stem
+            for data_file in data_files:
+                filename = Path(data_file).stem
+                # Extract depth from filename (format: T2022_LIAG_AGEMAR_-5000)
                 depth_str = filename.split('_')[-1]
-                depth_m = int(depth_str)
                 
-                # Get temperature variable (usually 'temperature' or similar)
-                temp_var = None
-                for var in ds.data_vars:
-                    if 'temp' in var.lower():
-                        temp_var = var
-                        break
-                
-                if temp_var is None:
-                    logger.warning(f"  ⚠ No temperature variable found in {filename}")
+                try:
+                    depth_m = int(depth_str)
+                except ValueError:
+                    logger.warning(f"  ⚠ Could not parse depth from {filename}")
                     continue
                 
-                # Store as numpy array
-                self.T_stack[depth_m] = ds[temp_var].values
+                # Load binary data file
+                with open(data_file, 'rb') as f:
+                    data_bytes = f.read()
+                
+                # Convert bytes to numpy float32 array
+                num_values = len(data_bytes) // 4
+                T_data = np.array(struct.unpack(f'{num_values}f', data_bytes[:num_values*4]), dtype=np.float32)
+                
+                # Reshape to grid (447 × 447 for ~200KB files)
+                if self.grid_actual_size is None:
+                    self.grid_actual_size = int(np.sqrt(len(T_data)))
+                    logger.info(f"  Inferred grid size: {self.grid_actual_size}x{self.grid_actual_size}")
+                
+                grid_size = self.grid_actual_size
+                if len(T_data) != grid_size * grid_size:
+                    logger.warning(f"  ⚠ Size mismatch: expected {grid_size*grid_size}, got {len(T_data)}")
+                    continue
+                
+                T_grid = T_data.reshape((grid_size, grid_size))
+                
+                self.T_stack[depth_m] = T_grid
                 self.levels_m_nhn.append(depth_m)
                 
-                logger.info(f"  ✓ Loaded {filename}: depth={depth_m}m, shape={ds[temp_var].shape}")
+                valid_count = np.isfinite(T_grid).sum()
+                logger.info(f"  ✓ {filename}: depth={depth_m:+6d}m, "
+                           f"T=[{np.nanmin(T_grid):6.1f}, {np.nanmax(T_grid):6.1f}]°C, "
+                           f"valid={valid_count}/{grid_size*grid_size}")
             
             self.levels_m_nhn.sort()
             logger.info(f"\n✓ Loaded {len(self.levels_m_nhn)} depth levels")
-            logger.info(f"  Depth range: {self.levels_m_nhn[0]:,}m to {self.levels_m_nhn[-1]:,}m")
+            logger.info(f"  Depth range: {self.levels_m_nhn[0]:+6d}m to {self.levels_m_nhn[-1]:+6d}m")
             
             return True
         
@@ -200,30 +215,24 @@ class ThermalDataLoader:
             return False
     
     def initialize_grid(self):
-        """Initialize processing grid from borehole bounds"""
+        """Initialize processing grid from GeoTIS grid size"""
         logger.info("\n" + "="*80)
         logger.info("INITIALIZING PROCESSING GRID")
         logger.info("="*80)
         
-        if self.boreholes_gdf is None:
-            logger.error("❌ Boreholes not loaded")
+        if self.grid_actual_size is None:
+            logger.error("❌ GeoTIS grid size not determined")
             return False
         
-        x_min, x_max = self.boreholes_gdf['x'].min(), self.boreholes_gdf['x'].max()
-        y_min, y_max = self.boreholes_gdf['y'].min(), self.boreholes_gdf['y'].max()
+        # Create grid matching GeoTIS size
+        grid_size = self.grid_actual_size
         
-        logger.info(f"  Borehole extent:")
-        logger.info(f"    X: {x_min:,.0f} to {x_max:,.0f}")
-        logger.info(f"    Y: {y_min:,.0f} to {y_max:,.0f}")
-        
-        # Create grid
-        x = np.linspace(x_min, x_max, self.grid_size)
-        y = np.linspace(y_min, y_max, self.grid_size)
+        # Use unit grid (0 to grid_size)
+        x = np.arange(grid_size)
+        y = np.arange(grid_size)
         self.xv, self.yv = np.meshgrid(x, y)
         
-        self.basin_bounds = (x_min, x_max, y_min, y_max)
-        
-        logger.info(f"✓ Grid initialized: {self.grid_size}x{self.grid_size}")
+        logger.info(f"✓ Grid initialized to match GeoTIS: {grid_size}x{grid_size}")
         return True
     
     def load_surface_from_ts_files(self, ts_files: list) -> np.ndarray:
