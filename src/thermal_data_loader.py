@@ -1,64 +1,52 @@
-    def load_surface_from_ts_files(self, ts_files: list) -> np.ndarray:
-        """Load GOCAD TS surface files and interpolate to grid"""
-        logger.info(f"    Loading {len(ts_files)} TS files...")
+    def process_horizon(self, horizon_name: str, top_surface_dir: str, base_surface_dir: str, fraction: float):
+        """Process a single horizon"""
+        logger.info(f"\n{'='*80}")
+        logger.info(f"Processing: {horizon_name.upper()}")
+        logger.info(f"{'='*80}")
         
-        points = []
-        values = []
+        # Load surfaces
+        top_files = sorted(glob.glob(str(self.surfaces_dir / top_surface_dir / "*.ts")))
+        base_files = sorted(glob.glob(str(self.surfaces_dir / base_surface_dir / "*.ts")))
         
-        for ts_file in ts_files:
-            try:
-                with open(ts_file, 'r', encoding='utf-8', errors='ignore') as f:
-                    content = f.read()
-                
-                # Parse TS file - look for VRTX (vertex) lines
-                lines = content.split('\n')
-                for line in lines:
-                    if line.startswith('VRTX'):
-                        parts = line.split()
-                        if len(parts) >= 5:
-                            try:
-                                x = float(parts[2])
-                                y = float(parts[3])
-                                z = float(parts[4])
-                                points.append([x, y])
-                                values.append(z)
-                            except (ValueError, IndexError):
-                                pass
-            except Exception as e:
-                logger.warning(f"    ⚠ Error reading {Path(ts_file).name}: {e}")
+        if not top_files or not base_files:
+            logger.warning(f"  ⚠ Surface files not found")
+            logger.warning(f"    Top: {self.surfaces_dir / top_surface_dir}")
+            logger.warning(f"    Base: {self.surfaces_dir / base_surface_dir}")
+            return
         
-        if not points:
-            logger.warning(f"    ⚠ No points found in TS files")
-            return np.full_like(self.xv, np.nan)
+        logger.info(f"1. Loading surfaces...")
+        z_top = self.load_surface_from_ts_files(top_files)
+        z_base = self.load_surface_from_ts_files(base_files)
         
-        points = np.array(points)
-        values = np.array(values)
+        # Interpolate horizon depth using fraction
+        z_horizon = z_top + (z_base - z_top) * fraction
         
-        logger.info(f"    ✓ Extracted {len(points)} points from {len(ts_files)} surfaces")
+        valid_z = ~np.isnan(z_horizon)
+        if not np.any(valid_z):
+            logger.warning(f"  ⚠ No valid depth data")
+            return
         
-        # DECIMATE: Keep only 10k evenly distributed points
-        if len(points) > 10000:
-            from scipy.spatial import cKDTree
-            
-            # Sample uniformly using clustering
-            sample_indices = np.random.choice(len(points), 10000, replace=False)
-            points_decimated = points[sample_indices]
-            values_decimated = values[sample_indices]
-            logger.info(f"    → Decimated to {len(points_decimated)} points for efficiency")
-        else:
-            points_decimated = points
-            values_decimated = values
+        logger.info(f"  ✓ Horizon depth range: {np.nanmin(z_horizon):.1f}m to {np.nanmax(z_horizon):.1f}m")
         
-        # Use griddata instead of RBF (much faster, less memory)
-        from scipy.interpolate import griddata
-        try:
-            z_grid = griddata(points_decimated, values_decimated, (self.xv, self.yv), method='linear', fill_value=np.nan)
-            
-            valid = ~np.isnan(z_grid)
-            if np.any(valid):
-                logger.info(f"    ✓ Interpolated to grid: {np.nanmin(z_grid):.1f}m to {np.nanmax(z_grid):.1f}m")
-            
-            return z_grid
-        except Exception as e:
-            logger.warning(f"    ⚠ Interpolation failed: {e}")
-            return np.full_like(self.xv, np.nan)
+        # Query GeoTIS at horizon depth
+        logger.info(f"2. Querying GeoTIS temperatures...")
+        T_horizon = self.interpolate_temperature_at_depth(z_horizon)
+        
+        valid_T = ~np.isnan(T_horizon)
+        if not np.any(valid_T):
+            logger.warning(f"  ⚠ No valid temperature data")
+            return
+        
+        logger.info(f"  ✓ Temperature range (raw): {np.nanmin(T_horizon):.1f}°C to {np.nanmax(T_horizon):.1f}°C")
+        
+        # CLIP to realistic range: 3-200°C
+        T_clipped = np.clip(T_horizon, 3.0, 200.0)
+        
+        logger.info(f"  ✓ Temperature range (clipped): {np.nanmin(T_clipped):.1f}°C to {np.nanmax(T_clipped):.1f}°C")
+        
+        # Export
+        logger.info(f"3. Exporting temperature evidence...")
+        self._export_geotiff(T_clipped, f"{horizon_name}_temperature_evidence.tif")
+        
+        logger.info(f"✓ {horizon_name.upper()} completed successfully!")
+        logger.info(f"  Final temperature range: {np.nanmin(T_clipped):.1f}°C to {np.nanmax(T_clipped):.1f}°C")
