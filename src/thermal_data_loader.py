@@ -15,7 +15,8 @@ import rasterio
 from rasterio.crs import CRS
 import json
 import glob
-from typing import Tuple, Dict, Optional
+import xarray as xr
+from typing import Tuple
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(levelname)s:%(name)s:%(message)s')
@@ -39,25 +40,25 @@ class ThermalDataLoader:
         self.borehole_file = Path(self.config.get("borehole_file", "data/inputs/borehole_mean_depths.csv"))
         self.output_dir = Path(self.config.get("output_dir", "data/outputs/rasters"))
         self.surfaces_dir = Path(self.config.get("surfaces_dir", "data/inputs/TUNB/surfaces"))
+        self.geotis_dir = Path(self.config.get("geotis_dir", "data/inputs/geotIS/temperature_basin_filtered"))
         
         self.output_dir.mkdir(parents=True, exist_ok=True)
         
         # GeoTIS temperature data
-        self.geotis_data = {}  # Will store loaded GeoTIS grids
-        self.levels_m_nhn = []  # Depth levels in meters NHN
+        self.T_stack = {}  # depth_m -> 2D array
+        self.levels_m_nhn = []  # Sorted depth levels
         
         # Borehole data
         self.boreholes_gdf = None
         
         # Grid
-        self.grid_mask = None
-        self.grid_pts_gdf = None
         self.xv = None
         self.yv = None
+        self.basin_bounds = None
         
         logger.info(f"✓ ThermalDataLoader initialized")
         logger.info(f"  CRS: {self.crs}")
-        logger.info(f"  Grid size: {self.grid_size}")
+        logger.info(f"  GeoTIS dir: {self.geotis_dir}")
         
     def _load_config(self, config_file: str) -> dict:
         """Load configuration from JSON file"""
@@ -128,37 +129,54 @@ class ThermalDataLoader:
     def load_geotis_temperatures(self):
         """Load GeoTIS temperature data from NetCDF files"""
         logger.info("\n" + "="*80)
-        logger.info("LOADING GEOTIS TEMPERATURE DATA")
+        logger.info("LOADING GEOTIS TEMPERATURE DATA (BASIN FILTERED)")
         logger.info("="*80)
         
-        temp_dir = Path("data/inputs/geotis_temperatures")
-        nc_files = sorted(glob.glob(str(temp_dir / "*.nc")))
+        nc_files = sorted(glob.glob(str(self.geotis_dir / "*.nc")))
         
         if not nc_files:
-            logger.error(f"❌ No NetCDF files found in {temp_dir}")
-            return
+            logger.error(f"❌ No NetCDF files found in {self.geotis_dir}")
+            return False
         
         logger.info(f"✓ Found {len(nc_files)} temperature depth files")
         
         try:
-            import xarray as xr
-            
-            # Load each depth level
             for nc_file in nc_files:
                 ds = xr.open_dataset(nc_file)
-                # Extract depth from filename or dataset
-                depth_m = int(Path(nc_file).stem.split('_')[-1])
                 
-                # Store temperature grid
-                self.geotis_data[depth_m] = ds['temperature'].values
+                # Extract depth from filename (format: temperature_-5000.nc, etc.)
+                filename = Path(nc_file).stem
+                depth_str = filename.split('_')[-1]
+                depth_m = int(depth_str)
+                
+                # Get temperature variable (usually 'temperature' or similar)
+                temp_var = None
+                for var in ds.data_vars:
+                    if 'temp' in var.lower():
+                        temp_var = var
+                        break
+                
+                if temp_var is None:
+                    logger.warning(f"  ⚠ No temperature variable found in {filename}")
+                    continue
+                
+                # Store as numpy array
+                self.T_stack[depth_m] = ds[temp_var].values
                 self.levels_m_nhn.append(depth_m)
+                
+                logger.info(f"  ✓ Loaded {filename}: depth={depth_m}m, shape={ds[temp_var].shape}")
             
             self.levels_m_nhn.sort()
-            logger.info(f"✓ Loaded {len(self.levels_m_nhn)} depth levels")
+            logger.info(f"\n✓ Loaded {len(self.levels_m_nhn)} depth levels")
             logger.info(f"  Depth range: {self.levels_m_nhn[0]:,}m to {self.levels_m_nhn[-1]:,}m")
+            
+            return True
         
         except Exception as e:
             logger.error(f"❌ Error loading GeoTIS data: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return False
     
     def load_borehole_data(self):
         """Load borehole mean depths and locations"""
@@ -168,124 +186,100 @@ class ThermalDataLoader:
         
         if not self.borehole_file.exists():
             logger.error(f"❌ Borehole file not found: {self.borehole_file}")
-            return
+            return False
         
         try:
             df = pd.read_csv(self.borehole_file, delimiter=';', decimal=',')
             logger.info(f"✓ Loaded {len(df)} boreholes")
             logger.info(f"  Columns: {list(df.columns)}")
             self.boreholes_gdf = df
+            return True
         
         except Exception as e:
             logger.error(f"❌ Error loading boreholes: {e}")
+            return False
     
-    def load_surface_from_ts_files(self, ts_files: list, xv: np.ndarray, yv: np.ndarray) -> np.ndarray:
+    def initialize_grid(self):
+        """Initialize processing grid from borehole bounds"""
+        logger.info("\n" + "="*80)
+        logger.info("INITIALIZING PROCESSING GRID")
+        logger.info("="*80)
+        
+        if self.boreholes_gdf is None:
+            logger.error("❌ Boreholes not loaded")
+            return False
+        
+        x_min, x_max = self.boreholes_gdf['x'].min(), self.boreholes_gdf['x'].max()
+        y_min, y_max = self.boreholes_gdf['y'].min(), self.boreholes_gdf['y'].max()
+        
+        logger.info(f"  Borehole extent:")
+        logger.info(f"    X: {x_min:,.0f} to {x_max:,.0f}")
+        logger.info(f"    Y: {y_min:,.0f} to {y_max:,.0f}")
+        
+        # Create grid
+        x = np.linspace(x_min, x_max, self.grid_size)
+        y = np.linspace(y_min, y_max, self.grid_size)
+        self.xv, self.yv = np.meshgrid(x, y)
+        
+        self.basin_bounds = (x_min, x_max, y_min, y_max)
+        
+        logger.info(f"✓ Grid initialized: {self.grid_size}x{self.grid_size}")
+        return True
+    
+    def load_surface_from_ts_files(self, ts_files: list) -> np.ndarray:
         """Load GOCAD TS surface files and interpolate to grid"""
-        logger.info(f"  Loading {len(ts_files)} TS files...")
+        logger.info(f"    Loading {len(ts_files)} TS files...")
         
         points = []
         values = []
         
         for ts_file in ts_files:
             try:
-                with open(ts_file) as f:
-                    lines = f.readlines()
+                with open(ts_file, 'r', encoding='utf-8', errors='ignore') as f:
+                    content = f.read()
                 
-                # Parse TS file format
-                in_vrtx = False
+                # Parse TS file - look for VRTX (vertex) lines
+                lines = content.split('\n')
                 for line in lines:
-                    if line.startswith("VRTX"):
-                        in_vrtx = True
-                        continue
-                    if in_vrtx:
-                        if line.startswith("ATOM") or line.startswith("TRGL"):
-                            in_vrtx = False
-                            continue
-                        parts = line.strip().split()
-                        if len(parts) >= 4:
+                    if line.startswith('VRTX'):
+                        parts = line.split()
+                        if len(parts) >= 5:
                             try:
-                                x, y, z = float(parts[1]), float(parts[2]), float(parts[3])
+                                # VRTX id x y z
+                                x = float(parts[2])
+                                y = float(parts[3])
+                                z = float(parts[4])
                                 points.append([x, y])
                                 values.append(z)
-                            except:
+                            except (ValueError, IndexError):
                                 pass
-            except:
-                pass
+            except Exception as e:
+                logger.warning(f"    ⚠ Error reading {Path(ts_file).name}: {e}")
         
         if not points:
-            logger.warning(f"  ⚠ No points found in TS files")
-            return np.full_like(xv, np.nan)
+            logger.warning(f"    ⚠ No points found in TS files")
+            return np.full_like(self.xv, np.nan)
         
         points = np.array(points)
         values = np.array(values)
         
-        logger.info(f"  ✓ Extracted {len(points)} points from surfaces")
+        logger.info(f"    ✓ Extracted {len(points)} points from {len(ts_files)} surfaces")
         
         # RBF interpolation to grid
         try:
             rbf = Rbf(points[:, 0], points[:, 1], values, function='thin_plate', smooth=1.0)
-            z_grid = rbf(xv, yv)
+            z_grid = rbf(self.xv, self.yv)
+            
+            valid = ~np.isnan(z_grid)
+            if np.any(valid):
+                logger.info(f"    ✓ Interpolated to grid: {np.nanmin(z_grid):.1f}m to {np.nanmax(z_grid):.1f}m")
+            
             return z_grid
         except Exception as e:
-            logger.warning(f"  ⚠ RBF interpolation failed: {e}")
-            return np.full_like(xv, np.nan)
+            logger.warning(f"    ⚠ RBF interpolation failed: {e}")
+            return np.full_like(self.xv, np.nan)
     
-    def process_horizon(self, horizon_name: str, top_surface_dir: str, base_surface_dir: str, fraction: float):
-        """Process a single horizon"""
-        logger.info(f"\n{'='*80}")
-        logger.info(f"Processing: {horizon_name.upper()}")
-        logger.info(f"{'='*80}")
-        
-        # Load surfaces
-        top_files = sorted(glob.glob(str(self.surfaces_dir / top_surface_dir / "*.ts")))
-        base_files = sorted(glob.glob(str(self.surfaces_dir / base_surface_dir / "*.ts")))
-        
-        if not top_files or not base_files:
-            logger.warning(f"  ⚠ Surface files not found")
-            return
-        
-        logger.info(f"1. Loading surfaces...")
-        z_top = self.load_surface_from_ts_files(top_files, self.xv, self.yv)
-        z_base = self.load_surface_from_ts_files(base_files, self.xv, self.yv)
-        
-        # Interpolate horizon depth using fraction
-        z_horizon = z_top + (z_base - z_top) * fraction
-        
-        logger.info(f"  ✓ Horizon depth range: {np.nanmin(z_horizon):.1f}m to {np.nanmax(z_horizon):.1f}m")
-        
-        # Query GeoTIS at horizon depth
-        logger.info(f"2. Querying GeoTIS temperatures...")
-        T_horizon = self._interpolate_temperature_at_depth(z_horizon)
-        
-        logger.info(f"  ✓ Temperature range: {np.nanmin(T_horizon):.1f}°C to {np.nanmax(T_horizon):.1f}°C")
-        
-        # Extract borehole temperatures and create high-weight evidence
-        logger.info(f"3. Extracting borehole evidence...")
-        borehole_points, borehole_temps = self._extract_borehole_temperatures(horizon_name, z_horizon)
-        
-        if len(borehole_points) > 0:
-            logger.info(f"  ✓ {len(borehole_points)} boreholes with valid data")
-            
-            # RBF interpolation with borehole weight
-            logger.info(f"4. RBF interpolation with borehole weighting...")
-            T_blended = self._rbf_interpolate_with_boreholes(
-                T_horizon, borehole_points, borehole_temps, weight=10.0
-            )
-        else:
-            T_blended = T_horizon
-            logger.info(f"  ⚠ No borehole data, using grid only")
-        
-        # Clamp negative temperatures
-        T_blended = np.maximum(T_blended, 3.0)
-        
-        # Export
-        logger.info(f"5. Exporting temperature evidence...")
-        self._export_geotiff(T_blended, f"{horizon_name}_temperature_evidence.tif")
-        
-        logger.info(f"✓ {horizon_name.upper()} completed successfully!")
-        logger.info(f"  Temperature range: {np.nanmin(T_blended):.1f}°C to {np.nanmax(T_blended):.1f}°C")
-    
-    def _interpolate_temperature_at_depth(self, z_grid: np.ndarray) -> np.ndarray:
+    def interpolate_temperature_at_depth(self, z_grid: np.ndarray) -> np.ndarray:
         """Interpolate temperature from GeoTIS stack at given depth grid"""
         if not self.levels_m_nhn:
             logger.warning("  ⚠ GeoTIS data not loaded")
@@ -303,111 +297,80 @@ class ThermalDataLoader:
                 idx = np.searchsorted(self.levels_m_nhn, z)
                 
                 if idx == 0:
-                    T_grid[i, j] = self.geotis_data[self.levels_m_nhn[0]][i, j]
+                    T_grid[i, j] = self.T_stack[self.levels_m_nhn[0]][i, j]
                 elif idx >= len(self.levels_m_nhn):
-                    T_grid[i, j] = self.geotis_data[self.levels_m_nhn[-1]][i, j]
+                    T_grid[i, j] = self.T_stack[self.levels_m_nhn[-1]][i, j]
                 else:
                     # Linear interpolation between levels
                     z0 = self.levels_m_nhn[idx - 1]
                     z1 = self.levels_m_nhn[idx]
-                    T0 = self.geotis_data[z0][i, j]
-                    T1 = self.geotis_data[z1][i, j]
+                    T0 = self.T_stack[z0][i, j]
+                    T1 = self.T_stack[z1][i, j]
+                    
+                    if np.isnan(T0) or np.isnan(T1):
+                        continue
                     
                     frac = (z - z0) / (z1 - z0)
                     T_grid[i, j] = T0 + (T1 - T0) * frac
         
         return T_grid
     
-    def _extract_borehole_temperatures(self, horizon_name: str, z_horizon: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        """Extract borehole temperatures at horizon depth"""
-        if self.boreholes_gdf is None:
-            return np.array([]), np.array([])
+    def process_horizon(self, horizon_name: str, top_surface_dir: str, base_surface_dir: str, fraction: float):
+        """Process a single horizon"""
+        logger.info(f"\n{'='*80}")
+        logger.info(f"Processing: {horizon_name.upper()}")
+        logger.info(f"{'='*80}")
         
-        depth_col = f"{horizon_name}_mean_depth"
-        if depth_col not in self.boreholes_gdf.columns:
-            return np.array([]), np.array([])
+        # Load surfaces
+        top_files = sorted(glob.glob(str(self.surfaces_dir / top_surface_dir / "*.ts")))
+        base_files = sorted(glob.glob(str(self.surfaces_dir / base_surface_dir / "*.ts")))
         
-        points = []
-        temps = []
+        if not top_files or not base_files:
+            logger.warning(f"  ⚠ Surface files not found")
+            logger.warning(f"    Top: {self.surfaces_dir / top_surface_dir}")
+            logger.warning(f"    Base: {self.surfaces_dir / base_surface_dir}")
+            return
         
-        for idx, row in self.boreholes_gdf.iterrows():
-            z = row[depth_col]
-            x = row['x']
-            y = row['y']
-            
-            if pd.isna(z) or z == 0:
-                continue
-            
-            # Query GeoTIS at this depth
-            T = self._query_geotis_at_point(x, y, z)
-            if not np.isnan(T):
-                points.append([x, y])
-                temps.append(T)
+        logger.info(f"1. Loading surfaces...")
+        z_top = self.load_surface_from_ts_files(top_files)
+        z_base = self.load_surface_from_ts_files(base_files)
         
-        return np.array(points), np.array(temps)
-    
-    def _query_geotis_at_point(self, x: float, y: float, z: float) -> float:
-        """Query GeoTIS temperature at a specific point and depth"""
-        # Find surrounding depth levels
-        idx = np.searchsorted(self.levels_m_nhn, z)
+        # Interpolate horizon depth using fraction
+        z_horizon = z_top + (z_base - z_top) * fraction
         
-        if idx == 0:
-            return self._sample_geotis_at_xy(x, y, self.levels_m_nhn[0])
-        elif idx >= len(self.levels_m_nhn):
-            return self._sample_geotis_at_xy(x, y, self.levels_m_nhn[-1])
-        else:
-            z0 = self.levels_m_nhn[idx - 1]
-            z1 = self.levels_m_nhn[idx]
-            T0 = self._sample_geotis_at_xy(x, y, z0)
-            T1 = self._sample_geotis_at_xy(x, y, z1)
-            
-            if np.isnan(T0) or np.isnan(T1):
-                return np.nan
-            
-            frac = (z - z0) / (z1 - z0)
-            return T0 + (T1 - T0) * frac
-    
-    def _sample_geotis_at_xy(self, x: float, y: float, z: float) -> float:
-        """Sample GeoTIS grid at x,y for a specific depth"""
-        if z not in self.geotis_data:
-            return np.nan
+        valid_z = ~np.isnan(z_horizon)
+        if not np.any(valid_z):
+            logger.warning(f"  ⚠ No valid depth data")
+            return
         
-        grid = self.geotis_data[z]
+        logger.info(f"  ✓ Horizon depth range: {np.nanmin(z_horizon):.1f}m to {np.nanmax(z_horizon):.1f}m")
         
-        # Simple nearest neighbor - implement proper interpolation if needed
-        # This is a placeholder
-        return np.nan
-    
-    def _rbf_interpolate_with_boreholes(self, T_grid: np.ndarray, points: np.ndarray, 
-                                       temps: np.ndarray, weight: float = 10.0) -> np.ndarray:
-        """RBF interpolation with borehole points weighted higher"""
-        if len(points) == 0:
-            return T_grid
+        # Query GeoTIS at horizon depth
+        logger.info(f"2. Querying GeoTIS temperatures...")
+        T_horizon = self.interpolate_temperature_at_depth(z_horizon)
         
-        # Extract valid grid points
-        valid_mask = ~np.isnan(T_grid)
-        if not np.any(valid_mask):
-            return T_grid
+        valid_T = ~np.isnan(T_horizon)
+        if not np.any(valid_T):
+            logger.warning(f"  ⚠ No valid temperature data")
+            return
         
-        y_idx, x_idx = np.where(valid_mask)
-        grid_points = np.column_stack([self.xv[y_idx, x_idx], self.yv[y_idx, x_idx]])
-        grid_temps = T_grid[valid_mask]
+        logger.info(f"  ✓ Temperature range: {np.nanmin(T_horizon):.1f}°C to {np.nanmax(T_horizon):.1f}°C")
         
-        # Combine with borehole points
-        all_points = np.vstack([grid_points, points])
-        all_temps = np.hstack([grid_temps, temps])
+        # Clamp negative temperatures
+        T_blended = np.maximum(T_horizon, 3.0)
         
-        # RBF with weights
-        rbf = Rbf(all_points[:, 0], all_points[:, 1], all_temps, function='thin_plate', smooth=0.1)
-        T_interp = rbf(self.xv, self.yv)
+        # Export
+        logger.info(f"3. Exporting temperature evidence...")
+        self._export_geotiff(T_blended, f"{horizon_name}_temperature_evidence.tif")
         
-        return T_interp
+        logger.info(f"✓ {horizon_name.upper()} completed successfully!")
+        logger.info(f"  Temperature range: {np.nanmin(T_blended):.1f}°C to {np.nanmax(T_blended):.1f}°C")
     
     def _export_geotiff(self, data: np.ndarray, filename: str):
         """Export temperature grid as GeoTIFF"""
         output_path = self.output_dir / filename
         
-        # Transform
+        # Simple transform (placeholder - update with actual coordinates)
         transform = Affine.identity()
         
         with rasterio.open(
@@ -416,11 +379,11 @@ class ThermalDataLoader:
             height=data.shape[0],
             width=data.shape[1],
             count=1,
-            dtype=data.dtype,
+            dtype=rasterio.float32,
             crs=self.crs,
             transform=transform
         ) as dst:
-            dst.write(data, 1)
+            dst.write(data.astype(rasterio.float32), 1)
         
         logger.info(f"  ✓ Saved: {output_path}")
 
@@ -433,8 +396,17 @@ def main():
     
     # Load data
     loader.load_heat_flow_database()
-    loader.load_geotis_temperatures()
-    loader.load_borehole_data()
+    if not loader.load_geotis_temperatures():
+        logger.error("❌ Failed to load GeoTIS data")
+        return
+    
+    if not loader.load_borehole_data():
+        logger.error("❌ Failed to load borehole data")
+        return
+    
+    if not loader.initialize_grid():
+        logger.error("❌ Failed to initialize grid")
+        return
     
     # Horizon specifications (name, top_surface_dir, base_surface_dir, fraction)
     horizons = [
